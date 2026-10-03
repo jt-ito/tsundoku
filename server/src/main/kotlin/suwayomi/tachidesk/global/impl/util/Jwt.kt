@@ -11,6 +11,7 @@ import com.auth0.jwt.exceptions.TokenExpiredException
 import io.github.oshai.kotlinlogging.KotlinLogging
 import suwayomi.tachidesk.server.serverConfig
 import suwayomi.tachidesk.server.user.UserManager
+import suwayomi.tachidesk.server.user.UserSessions
 import suwayomi.tachidesk.server.user.UserType
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -73,12 +74,27 @@ object Jwt {
         role: String = "ADMIN",
     ): JwtTokens {
         val accessToken = createAccessToken(userId, username, role)
-        val refreshToken = createRefreshToken(userId, username, role)
+        val refreshToken = createRefreshToken(userId, username, role, UserSessions.create(userId))
 
         return JwtTokens(
             accessToken = accessToken,
             refreshToken = refreshToken,
         )
+    }
+
+    /** An access token on its own, without a session: it cannot be refreshed. */
+    fun generateAccessToken(
+        userId: Int,
+        username: String,
+        role: String,
+    ): String = createAccessToken(userId, username, role)
+
+    /** Ends the session of a refresh token. Works for expired tokens, a forged one is rejected. */
+    fun revokeRefreshToken(refreshToken: String) {
+        val decoded = JWT.decode(refreshToken)
+        algorithm.verify(decoded)
+        require(decoded.getClaim("token_type").asString() == "refresh") { "Not a refresh token" }
+        decoded.getClaim("sid").asString()?.let { UserSessions.delete(it) }
     }
 
     fun refreshJwt(refreshToken: String): String {
@@ -90,6 +106,9 @@ object Jwt {
             "Token intended for different audience ${jwt.audience}"
         }
         val userId = jwt.getClaim("user_id").asInt() ?: 1
+        // a refresh token only works while its session exists (signed out, password changed, account deleted: gone)
+        val sessionId = jwt.getClaim("sid").asString()
+        require(sessionId != null && UserSessions.touch(sessionId, userId)) { "The session has ended, log in again" }
         // same as verifyJwt: refreshing must not resurrect deleted accounts or outdated roles
         val currentUser = UserManager.getUser(userId)
         require(currentUser != null || userId == 1) { "The account no longer exists" }
@@ -162,12 +181,14 @@ object Jwt {
         userId: Int = 1,
         username: String = "admin",
         role: String = "ADMIN",
+        sessionId: String,
     ): String =
         JWT
             .create()
             .withIssuer(ISSUER)
             .withAudience(AUDIENCE)
             .withClaim("token_type", "refresh")
+            .withClaim("sid", sessionId)
             .withClaim("user_id", userId)
             .withClaim("username", username)
             .withClaim("role", role)

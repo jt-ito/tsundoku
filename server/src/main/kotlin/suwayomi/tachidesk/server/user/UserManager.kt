@@ -256,6 +256,11 @@ object UserManager {
                 }
             }
 
+            // a new password signs the account out everywhere
+            if (!newPassword.isNullOrEmpty()) {
+                UserSessions.deleteAll(id)
+            }
+
             UserTable.selectAll().where { UserTable.id eq id }.first().let { UserTable.toDataClass(it) }
         }
 

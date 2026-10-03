@@ -218,8 +218,8 @@ object JavalinSetup {
                 if (uri.host != null || uri.scheme != null) {
                     throw IllegalArgumentException("Given redirect is not relative, refusing")
                 }
-                val token = user?.let { suwayomi.tachidesk.global.impl.util.Jwt.generateJwt(it.id, it.username, it.role).accessToken }
-                    ?: suwayomi.tachidesk.server.user.UserManager.getUser(1)?.let { suwayomi.tachidesk.global.impl.util.Jwt.generateJwt(it.id, it.username, it.role).accessToken }
+                val token = user?.let { suwayomi.tachidesk.global.impl.util.Jwt.generateAccessToken(it.id, it.username, it.role) }
+                    ?: suwayomi.tachidesk.server.user.UserManager.getUser(1)?.let { suwayomi.tachidesk.global.impl.util.Jwt.generateAccessToken(it.id, it.username, it.role) }
                 if (token != null) {
                     ctx.cookie(
                         io.javalin.http.Cookie(

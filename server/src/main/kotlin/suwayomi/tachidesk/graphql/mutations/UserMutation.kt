@@ -4,6 +4,7 @@ package suwayomi.tachidesk.graphql.mutations
 
 import graphql.schema.DataFetchingEnvironment
 import suwayomi.tachidesk.global.impl.util.Jwt
+import suwayomi.tachidesk.manga.impl.LibraryShare
 import suwayomi.tachidesk.graphql.server.getAttribute
 import suwayomi.tachidesk.graphql.types.UserAccountType
 import suwayomi.tachidesk.server.JavalinSetup.Attribute
@@ -30,6 +31,8 @@ class UserMutation {
     ): LoginPayload {
         val user = UserManager.authenticate(input.username, input.password)
         if (user != null) {
+            // catch up with the shares that follow other accounts
+            LibraryShare.requestSync(user.id)
             val jwt =
                 Jwt.generateJwt(
                     userId = user.id,
@@ -58,11 +61,33 @@ class UserMutation {
 
     fun refreshToken(input: RefreshTokenInput): RefreshTokenPayload {
         val accessToken = Jwt.refreshJwt(input.refreshToken)
+        // an active client refreshes regularly, which also catches up with the shares that follow other accounts
+        com.auth0.jwt.JWT
+            .decode(input.refreshToken)
+            .getClaim("user_id")
+            .asInt()
+            ?.let { LibraryShare.requestSync(it) }
 
         return RefreshTokenPayload(
             clientMutationId = input.clientMutationId,
             accessToken = accessToken,
         )
+    }
+
+    data class LogoutInput(
+        val clientMutationId: String? = null,
+        val refreshToken: String,
+    )
+
+    data class LogoutPayload(
+        val clientMutationId: String?,
+        val success: Boolean,
+    )
+
+    /** Ends the session of a refresh token, so it can't be used again (signing out of one device or account). */
+    fun logout(input: LogoutInput): LogoutPayload {
+        Jwt.revokeRefreshToken(input.refreshToken)
+        return LogoutPayload(input.clientMutationId, true)
     }
 
     data class CreateUserInput(
