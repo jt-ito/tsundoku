@@ -28,6 +28,7 @@ import suwayomi.tachidesk.graphql.types.ChapterType
 import suwayomi.tachidesk.graphql.types.MangaMetaType
 import suwayomi.tachidesk.graphql.types.MangaType
 import suwayomi.tachidesk.graphql.types.MetaInput
+import suwayomi.tachidesk.manga.impl.LibraryShare
 import suwayomi.tachidesk.manga.impl.Library
 import suwayomi.tachidesk.manga.impl.Manga
 import suwayomi.tachidesk.manga.impl.update.IUpdater
@@ -156,6 +157,7 @@ class MangaMutation {
 
         return future {
             updateMangas(userId, listOf(id), patch)
+            if (patch.inLibrary != null) LibraryShare.requestSync(userId)
 
             val manga =
                 transaction {
@@ -180,6 +182,7 @@ class MangaMutation {
 
         return future {
             updateMangas(userId, ids, patch)
+            if (patch.inLibrary != null) LibraryShare.requestSync(userId)
 
             val mangas =
                 transaction {

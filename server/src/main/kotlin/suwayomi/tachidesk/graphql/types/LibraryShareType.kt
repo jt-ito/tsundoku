@@ -18,6 +18,15 @@ data class LibraryShareType(
     val status: LibraryShareStatus,
     val createdAt: Long,
     val respondedAt: Long,
+    /** the sender keeps adding new manga and categories to this share, reading progress is never shared */
+    val synced: Boolean,
+    /** the recipient follows a synced share automatically */
+    val autoSync: Boolean,
+    val lastSyncedAt: Long,
+    /** set when this share is a two way request, the id of the share it answers */
+    val pairedWith: Int?,
+    /** on a synced share the recipient accepted: the state of their two way request, null if they made none */
+    val twoWayStatus: LibraryShareStatus?,
 ) {
     companion object {
         fun from(
@@ -34,6 +43,11 @@ data class LibraryShareType(
             status = LibraryShareStatus.valueOf(share.status.name),
             createdAt = share.createdAt,
             respondedAt = share.respondedAt,
+            synced = share.synced,
+            autoSync = share.autoSync,
+            lastSyncedAt = share.lastSyncedAt,
+            pairedWith = share.pairedWith,
+            twoWayStatus = share.twoWayStatus?.let { LibraryShareStatus.valueOf(it.name) },
         )
     }
 }

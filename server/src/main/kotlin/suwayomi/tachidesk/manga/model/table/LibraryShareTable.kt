@@ -19,4 +19,21 @@ object LibraryShareTable : IntIdTable("library_share") {
     val status = varchar("status", 16).default("PENDING") // PENDING, ACCEPTED, DECLINED, CANCELLED
     val createdAt = long("created_at").default(0)
     val respondedAt = long("responded_at").default(0)
+
+    /** the sender keeps the share up to date with new manga and categories */
+    val synced = bool("synced").default(false)
+
+    /** the recipient lets a synced share follow the sender by itself */
+    val autoSync = bool("auto_sync").default(false)
+    val lastSyncedAt = long("last_synced_at").default(0)
+
+    /** set on a two way request: the share of the other direction it answers */
+    val pairedWith = integer("paired_with").nullable()
+}
+
+/** What a share has already delivered, so a manga the recipient removed is not added again by the next sync. */
+object LibraryShareDeliveredTable : IntIdTable("library_share_delivered") {
+    val share = reference("share_id", LibraryShareTable, ReferenceOption.CASCADE)
+    val kind = varchar("kind", 16) // MANGA or CATEGORY
+    val ref = integer("ref_id")
 }

@@ -47,6 +47,7 @@ import suwayomi.tachidesk.server.database.DatabaseMigrationService
 import suwayomi.tachidesk.server.database.databaseUp
 import suwayomi.tachidesk.server.generated.BuildConfig
 import suwayomi.tachidesk.server.settings.SettingsRegistry
+import suwayomi.tachidesk.manga.impl.LibraryShare
 import suwayomi.tachidesk.server.user.SetupManager
 import suwayomi.tachidesk.server.util.AppMutex.handleAppMutex
 import suwayomi.tachidesk.server.util.CEFManager
@@ -339,6 +340,7 @@ fun applicationSetup() {
     }
 
     SetupManager.init()
+    LibraryShare.startAutoSync()
 
     try {
         LocalSource.register()

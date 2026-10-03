@@ -30,6 +30,7 @@ import suwayomi.tachidesk.server.user.idOrNull
 import suwayomi.tachidesk.graphql.types.MangaType
 import suwayomi.tachidesk.graphql.types.MetaInput
 import suwayomi.tachidesk.manga.impl.Category
+import suwayomi.tachidesk.manga.impl.LibraryShare
 import suwayomi.tachidesk.manga.impl.CategoryManga
 import suwayomi.tachidesk.manga.impl.util.lang.isEmpty
 import suwayomi.tachidesk.manga.model.dataclass.IncludeOrExclude
@@ -426,6 +427,7 @@ class CategoryMutation {
                 CategoryType(CategoryTable.selectAll().where { CategoryTable.id eq id }.first())
             }
 
+        LibraryShare.requestSync(userId)
         return CreateCategoryPayload(clientMutationId, category)
     }
 
@@ -544,6 +546,7 @@ class CategoryMutation {
         val userId = dataFetchingEnvironment.currentUserId()
 
         updateMangas(listOf(id), patch)
+        LibraryShare.requestSync(userId)
 
         val manga =
             transaction {
@@ -565,6 +568,7 @@ class CategoryMutation {
         val userId = dataFetchingEnvironment.currentUserId()
 
         updateMangas(ids, patch)
+        LibraryShare.requestSync(userId)
 
         val mangas =
             transaction {

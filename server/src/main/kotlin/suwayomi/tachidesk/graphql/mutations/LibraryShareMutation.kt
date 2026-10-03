@@ -15,6 +15,8 @@ class LibraryShareMutation {
         val username: String,
         val scope: LibraryShareScope,
         val categoryIds: List<Int> = emptyList(),
+        /** keep sharing new manga and categories after the recipient accepted */
+        val synced: Boolean = false,
     )
 
     data class LibraryShareChangePayload(
@@ -29,7 +31,7 @@ class LibraryShareMutation {
         input: CreateLibraryShareInput,
     ): LibraryShareChangePayload {
         val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
-        val id = LibraryShare.create(userId, input.username, LibraryShare.Scope.valueOf(input.scope.name), input.categoryIds)
+        val id = LibraryShare.create(userId, input.username, LibraryShare.Scope.valueOf(input.scope.name), input.categoryIds, input.synced)
         return payload(input.clientMutationId, id, userId, 0)
     }
 
@@ -37,6 +39,8 @@ class LibraryShareMutation {
         val clientMutationId: String? = null,
         val id: Int,
         val accept: Boolean,
+        /** follow the share automatically, only used when the sender made it synced */
+        val autoSync: Boolean = false,
     )
 
     fun respondToLibraryShare(
@@ -46,7 +50,7 @@ class LibraryShareMutation {
         val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
         val added =
             if (input.accept) {
-                LibraryShare.accept(input.id, userId)
+                LibraryShare.accept(input.id, userId, input.autoSync)
             } else {
                 LibraryShare.decline(input.id, userId)
                 0
@@ -64,7 +68,51 @@ class LibraryShareMutation {
         input: CancelLibraryShareInput,
     ): LibraryShareChangePayload {
         val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
-        LibraryShare.cancel(input.id, userId)
+        LibraryShare.cancelOrStop(input.id, userId)
+        return payload(input.clientMutationId, input.id, userId, 0)
+    }
+
+    data class SetLibraryShareAutoSyncInput(
+        val clientMutationId: String? = null,
+        val id: Int,
+        val autoSync: Boolean,
+    )
+
+    fun setLibraryShareAutoSync(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: SetLibraryShareAutoSyncInput,
+    ): LibraryShareChangePayload {
+        val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
+        LibraryShare.setAutoSync(input.id, userId, input.autoSync)
+        return payload(input.clientMutationId, input.id, userId, 0)
+    }
+
+    data class SyncLibraryShareInput(
+        val clientMutationId: String? = null,
+        val id: Int,
+    )
+
+    fun syncLibraryShare(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: SyncLibraryShareInput,
+    ): LibraryShareChangePayload {
+        val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
+        val added = LibraryShare.syncNow(input.id, userId)
+        return payload(input.clientMutationId, input.id, userId, added)
+    }
+
+    data class RequestTwoWayLibraryShareInput(
+        val clientMutationId: String? = null,
+        /** the synced share the account received and accepted */
+        val id: Int,
+    )
+
+    fun requestTwoWayLibraryShare(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: RequestTwoWayLibraryShareInput,
+    ): LibraryShareChangePayload {
+        val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
+        LibraryShare.requestTwoWay(input.id, userId)
         return payload(input.clientMutationId, input.id, userId, 0)
     }
 

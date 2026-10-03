@@ -115,6 +115,7 @@ object DatabaseMigrationService {
             suwayomi.tachidesk.manga.model.table.UserMangaTable,
             suwayomi.tachidesk.manga.model.table.UserChapterTable,
             suwayomi.tachidesk.manga.model.table.LibraryShareTable,
+            suwayomi.tachidesk.manga.model.table.LibraryShareDeliveredTable,
         )
 
     // the same tables, by their actual SQL name - used to resync each engine's own auto-increment/sequence
