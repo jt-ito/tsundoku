@@ -644,6 +644,11 @@ object WebInterfaceManager {
             return BuildConfig.WEBUI_TAG
         }
 
+        if (flavor.versionMappingUrl.isBlank()) {
+            // a custom WebUI has no mapping file, so there is nothing to update from
+            return getLocalVersion()
+        }
+
         val currentServerVersionNumber =
             BuildConfig.VERSION
                 .split(".")
