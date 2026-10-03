@@ -36,6 +36,7 @@ import suwayomi.tachidesk.graphql.mutations.SourceMutation
 import suwayomi.tachidesk.graphql.mutations.SyncMutation
 import suwayomi.tachidesk.graphql.mutations.TrackMutation
 import suwayomi.tachidesk.graphql.mutations.UpdateMutation
+import suwayomi.tachidesk.graphql.mutations.LibraryShareMutation
 import suwayomi.tachidesk.graphql.mutations.UserMutation
 import suwayomi.tachidesk.graphql.mutations.WebviewMutation
 import suwayomi.tachidesk.graphql.queries.BackupQuery
@@ -53,6 +54,7 @@ import suwayomi.tachidesk.graphql.queries.SourceQuery
 import suwayomi.tachidesk.graphql.queries.SyncQuery
 import suwayomi.tachidesk.graphql.queries.TrackQuery
 import suwayomi.tachidesk.graphql.queries.UpdateQuery
+import suwayomi.tachidesk.graphql.queries.LibraryShareQuery
 import suwayomi.tachidesk.graphql.queries.UserQuery
 import suwayomi.tachidesk.graphql.server.primitives.Cursor
 import suwayomi.tachidesk.graphql.server.primitives.GraphQLCursor
@@ -110,6 +112,7 @@ object GraphQLSchemaProvider {
                         TopLevelObject(ExtensionStoreQuery()),
                         TopLevelObject(InfoQuery()),
                         TopLevelObject(KoreaderSyncQuery()),
+                        TopLevelObject(LibraryShareQuery()),
                         TopLevelObject(MangaQuery()),
                         TopLevelObject(MetaQuery()),
                         TopLevelObject(SettingsQuery()),
@@ -130,6 +133,7 @@ object GraphQLSchemaProvider {
                         TopLevelObject(ImageMutation()),
                         TopLevelObject(InfoMutation()),
                         TopLevelObject(KoreaderSyncMutation()),
+                        TopLevelObject(LibraryShareMutation()),
                         TopLevelObject(MangaMutation()),
                         TopLevelObject(MetaMutation()),
                         TopLevelObject(SettingsMutation()),
