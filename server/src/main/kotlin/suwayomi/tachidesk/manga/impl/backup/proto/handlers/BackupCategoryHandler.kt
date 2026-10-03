@@ -47,7 +47,8 @@ object BackupCategoryHandler {
 
             categories.map {
                 BackupCategory(
-                    it[CategoryTable.name],
+                    // restore skips this name, so a renamed default must not leak into the backup as a real category
+                    if (it[CategoryTable.id].value == Category.DEFAULT_CATEGORY_ID) Category.DEFAULT_CATEGORY_NAME else it[CategoryTable.name],
                     it[CategoryTable.order],
                     it[CategoryTable.flags],
                     it[CategoryTable.version],

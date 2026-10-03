@@ -7,6 +7,7 @@ package suwayomi.tachidesk.manga.impl
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+import org.jetbrains.exposed.v1.core.Op
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.dao.id.EntityID
@@ -18,6 +19,7 @@ import org.jetbrains.exposed.v1.core.statements.BatchUpdateStatement
 import org.jetbrains.exposed.v1.jdbc.andWhere
 import org.jetbrains.exposed.v1.jdbc.batchInsert
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.statements.toExecutable
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
@@ -28,6 +30,9 @@ import suwayomi.tachidesk.manga.model.table.CategoryMangaTable
 import suwayomi.tachidesk.manga.model.table.CategoryMetaTable
 import suwayomi.tachidesk.manga.model.table.CategoryTable
 import suwayomi.tachidesk.manga.model.table.MangaTable
+import suwayomi.tachidesk.manga.model.table.UserMangaTable
+import suwayomi.tachidesk.manga.model.table.libraryOf
+import suwayomi.tachidesk.manga.model.table.ownedBy
 import suwayomi.tachidesk.manga.model.table.toDataClass
 
 object Category {
@@ -120,12 +125,12 @@ object Category {
         position: Int,
     ) {
         require(position > 0) { "'position' must be > 0" }
-        if (categoryId == DEFAULT_CATEGORY_ID) return
         transaction {
+            val showDefault = isDefaultCategoryVisible()
             val categories =
                 CategoryTable
                     .selectAll()
-                    .where { CategoryTable.id neq DEFAULT_CATEGORY_ID }
+                    .where { if (showDefault) Op.TRUE else CategoryTable.id neq DEFAULT_CATEGORY_ID }
                     .orderBy(CategoryTable.order to SortOrder.ASC, CategoryTable.id to SortOrder.ASC)
                     .toMutableList()
             val from = categories.indexOfFirst { it[CategoryTable.id].value == categoryId }
@@ -165,7 +170,7 @@ object Category {
             CategoryTable
                 .selectAll()
                 .orderBy(CategoryTable.order to SortOrder.ASC)
-                .sortedWith(compareBy({ it[CategoryTable.id].value != 0 }, { it[CategoryTable.order] }))
+                .sortedWith(compareBy({ it[CategoryTable.order] }, { it[CategoryTable.id].value }))
                 .forEachIndexed { index, cat ->
                     CategoryTable.update({ CategoryTable.id eq cat[CategoryTable.id].value }) {
                         it[CategoryTable.order] = index
@@ -187,6 +192,55 @@ object Category {
 
     const val DEFAULT_CATEGORY_ID = 0
     const val DEFAULT_CATEGORY_NAME = "Default"
+    private const val DEFAULT_HIDDEN_META_KEY = "default_category_hidden"
+
+    /**
+     * The default category can be "deleted" by the user: its manga move into another category and it stays hidden,
+     * unless manga without a category exist again or there is no other category left.
+     */
+    fun isDefaultCategoryVisible(): Boolean =
+        transaction {
+            val hidden =
+                CategoryMetaTable
+                    .selectAll()
+                    .where { (CategoryMetaTable.ref eq DEFAULT_CATEGORY_ID) and (CategoryMetaTable.key eq DEFAULT_HIDDEN_META_KEY) }
+                    .empty()
+                    .not()
+            !hidden ||
+                needsDefaultCategory() ||
+                CategoryTable
+                    .selectAll()
+                    .where { CategoryTable.id neq DEFAULT_CATEGORY_ID }
+                    .empty()
+        }
+
+    /** Moves the manga the account has in its library without a category into its first other category and hides the default. */
+    fun removeDefaultCategory(userId: Int): List<Int> =
+        transaction {
+            val target =
+                CategoryTable
+                    .selectAll()
+                    .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq DEFAULT_CATEGORY_ID) }
+                    .orderBy(CategoryTable.order to SortOrder.ASC, CategoryTable.id to SortOrder.ASC)
+                    .firstOrNull()
+                    ?.get(CategoryTable.id)
+                    ?.value
+            require(target != null) { "The default category can only be deleted when there are other categories" }
+
+            val mangaIds =
+                MangaTable
+                    .leftJoin(CategoryMangaTable)
+                    .select(MangaTable.id)
+                    .where { UserMangaTable.libraryOf(userId) and CategoryMangaTable.manga.isNull() }
+                    .map { it[MangaTable.id].value }
+            CategoryMangaTable.batchInsert(mangaIds) {
+                this[CategoryMangaTable.category] = target
+                this[CategoryMangaTable.manga] = it
+            }
+
+            modifyMeta(DEFAULT_CATEGORY_ID, DEFAULT_HIDDEN_META_KEY, "true")
+            mangaIds
+        }
 
     fun getCategoryList(): List<CategoryDataClass> =
         transaction {

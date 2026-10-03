@@ -17,6 +17,7 @@ import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.greater
 import org.jetbrains.exposed.v1.core.isNull
 import org.jetbrains.exposed.v1.core.less
+import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.jdbc.andWhere
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -46,6 +47,7 @@ import suwayomi.tachidesk.graphql.server.primitives.greaterNotUnique
 import suwayomi.tachidesk.graphql.server.primitives.lessNotUnique
 import suwayomi.tachidesk.graphql.types.CategoryNodeList
 import suwayomi.tachidesk.graphql.types.CategoryType
+import suwayomi.tachidesk.manga.impl.Category
 import suwayomi.tachidesk.manga.model.table.CategoryTable
 import java.util.concurrent.CompletableFuture
 
@@ -158,6 +160,9 @@ class CategoryQuery {
             transaction {
                 val res = CategoryTable.selectAll()
                 res.andWhere { (CategoryTable.user eq userId) or (CategoryTable.user.isNull()) }
+                if (!Category.isDefaultCategoryVisible()) {
+                    res.andWhere { CategoryTable.id neq Category.DEFAULT_CATEGORY_ID }
+                }
 
                 res.applyOps(condition, filter)
 

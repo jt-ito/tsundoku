@@ -441,12 +441,18 @@ class CategoryMutation {
     )
 
     @RequireAuth
-    fun deleteCategory(input: DeleteCategoryInput): DeleteCategoryPayload? {
+    fun deleteCategory(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: DeleteCategoryInput,
+    ): DeleteCategoryPayload? {
         val (clientMutationId, categoryId) = input
-        if (categoryId == 0) { // Don't delete default category
+        if (categoryId == Category.DEFAULT_CATEGORY_ID) {
+            // the default row stays; its manga move to another category and it gets hidden
+            val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser)?.idOrNull ?: 1
+            Category.removeDefaultCategory(userId)
             return DeleteCategoryPayload(
                 clientMutationId,
-                null,
+                transaction { CategoryType(CategoryTable.selectAll().where { CategoryTable.id eq categoryId }.first()) },
                 emptyList(),
             )
         }
