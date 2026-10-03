@@ -58,6 +58,12 @@ fi
 # lock files left behind are stale.
 find /data/cache -maxdepth 4 \( -name SingletonLock -o -name SingletonCookie -o -name SingletonSocket \) -delete 2>/dev/null || true
 
+# The built-in PostgreSQL leaves postmaster.pid behind when its container is killed. A new container starts counting
+# process ids from scratch, so the old pid can belong to an unrelated process by then (here: a pid collision made
+# PostgreSQL believe another server was running and the first start failed after 90 seconds). Nothing of this
+# container has started yet, and only one container uses a data folder, so the file is stale.
+rm -f /data/postgres-data/postmaster.pid 2>/dev/null || true
+
 # The WebView's Chromium will not start without a display ("Missing X server or $DISPLAY"), and a container has none, so
 # give it a virtual one. The lock files are left over when a stopped container is started again.
 if [ "$(printf '%s' "${KCEF_ENABLED:-true}" | tr 'A-Z' 'a-z')" != "false" ] && command -v Xvfb >/dev/null 2>&1; then
