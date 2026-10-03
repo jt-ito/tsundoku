@@ -13,7 +13,9 @@ import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.dao.id.EntityID
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
+import org.jetbrains.exposed.v1.core.inSubQuery
 import org.jetbrains.exposed.v1.core.isNull
+import org.jetbrains.exposed.v1.core.notInSubQuery
 import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.statements.BatchUpdateStatement
 import org.jetbrains.exposed.v1.jdbc.andWhere
@@ -182,15 +184,26 @@ object Category {
     private fun needsDefaultCategory() =
         transaction {
             MangaTable
-                .leftJoin(CategoryMangaTable)
                 .selectAll()
-                .where { MangaTable.inLibrary eq true }
-                .andWhere { CategoryMangaTable.manga.isNull() }
+                .where { (MangaTable.inLibrary eq true) and uncategorizedOf(1) }
                 .empty()
                 .not()
         }
 
     const val DEFAULT_CATEGORY_ID = 0
+
+    /**
+     * The manga that are in none of the categories of the account. Category links are shared by all accounts, so a link
+     * into the category of another account (for example a shared library) must not count as categorized here.
+     */
+    fun uncategorizedOf(userId: Int): Op<Boolean> =
+        MangaTable.id notInSubQuery
+            CategoryMangaTable
+                .select(CategoryMangaTable.manga)
+                .where {
+                    CategoryMangaTable.category inSubQuery
+                        CategoryTable.select(CategoryTable.id).where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq DEFAULT_CATEGORY_ID) }
+                }
     const val DEFAULT_CATEGORY_NAME = "Default"
     private const val DEFAULT_HIDDEN_META_KEY = "default_category_hidden"
 
@@ -229,9 +242,8 @@ object Category {
 
             val mangaIds =
                 MangaTable
-                    .leftJoin(CategoryMangaTable)
                     .select(MangaTable.id)
-                    .where { UserMangaTable.libraryOf(userId) and CategoryMangaTable.manga.isNull() }
+                    .where { UserMangaTable.libraryOf(userId) and uncategorizedOf(userId) }
                     .map { it[MangaTable.id].value }
             CategoryMangaTable.batchInsert(mangaIds) {
                 this[CategoryMangaTable.category] = target

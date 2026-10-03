@@ -65,10 +65,7 @@ class MangaForCategoryDataLoader : KotlinDataLoader<Int, MangaNodeList> {
 
                     val itemsByRef =
                         if (ids.contains(0)) {
-                            val baseQuery =
-                                MangaTable
-                                    .leftJoin(CategoryMangaTable)
-                                    .selectAll()
+                            val baseQuery = MangaTable.selectAll()
 
                             val scopedQuery =
                                 if (userId == 1) {
@@ -87,7 +84,7 @@ class MangaForCategoryDataLoader : KotlinDataLoader<Int, MangaNodeList> {
                                 }
 
                             scopedQuery
-                                .andWhere { CategoryMangaTable.manga.isNull() }
+                                .andWhere { suwayomi.tachidesk.manga.impl.Category.uncategorizedOf(userId) }
                                 .map { MangaType(it, userId) }
                                 .let {
                                     mapOf(0 to it)

@@ -128,9 +128,8 @@ object CategoryManga {
                 if (categoryId == DEFAULT_CATEGORY_ID) {
                     MangaTable
                         .leftJoin(ChapterTable, { MangaTable.id }, { ChapterTable.manga })
-                        .leftJoin(CategoryMangaTable)
                         .select(columns = selectedColumns)
-                        .where { inLibrary and CategoryMangaTable.category.isNull() }
+                        .where { inLibrary and Category.uncategorizedOf(1) }
                 } else {
                     MangaTable
                         .innerJoin(CategoryMangaTable)
