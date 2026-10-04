@@ -496,6 +496,22 @@ class LibraryShareTest : ApplicationTest() {
     }
 
     @Test
+    fun `a manga moved out of the default into a category leaves the recipient's default category`() {
+        val a = createLibraryManga("a")
+        addToLibrary(a)
+        val reading = transaction { CategoryTable.insertAndGetId { it[name] = "Reading"; it[user] = EntityID(sender.id, UserTable) }.value }
+        val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true, mirror = true)
+        LibraryShare.accept(shareId, recipient.id, autoSync = true)
+        // without a category it lands in the recipient's default category
+        assertEquals(listOf("Default"), recipientCategoriesOf(a))
+
+        transaction { CategoryMangaTable.insert { it[category] = reading; it[manga] = a } }
+        LibraryShare.syncNow(shareId, recipient.id)
+
+        assertEquals(listOf("Reading"), recipientCategoriesOf(a))
+    }
+
+    @Test
     fun `one for one keeps the order of shared categories equal in both directions`() {
         val a = createLibraryManga("a")
         addToLibrary(a)

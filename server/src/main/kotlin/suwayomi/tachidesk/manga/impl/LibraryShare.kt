@@ -781,6 +781,11 @@ object LibraryShare {
 
         // manga put into a shared category are put into the matching category of the recipient
         val recipientLibrary = libraryOf(userId)
+        val defaultCategoryIds =
+            CategoryTable
+                .select(CategoryTable.id)
+                .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq 0) and (CategoryTable.isDefault eq true) }
+                .map { it[CategoryTable.id].value }
         val existingLinks =
             CategoryMangaTable
                 .selectAll()
@@ -799,6 +804,27 @@ object LibraryShare {
                 }
             }
 
+        // a manga that sits in a shared category is not "uncategorized" any more: it leaves the default categories it was
+        // put into while it had none (one for one shares also fix what an earlier sync left behind)
+        // (the Default categories are paired for the order only, they are not shared categories)
+        val sharedTargets = mapping.filterKeys { it in senderCategoryIds }.values.toSet()
+        val categorizedByShare =
+            if (row[LibraryShareTable.mirror]) {
+                CategoryMangaTable
+                    .select(CategoryMangaTable.manga)
+                    .where { CategoryMangaTable.category inList sharedTargets.toList() }
+                    .map { it[CategoryMangaTable.manga].value }
+                    .toSet()
+            } else {
+                addedLinks.filter { (categoryId, mangaId) -> mangaId in recipientLibrary && categoryId in targetOf }.map { it.second }.toSet()
+            }
+        val defaultsToLeave = defaultCategoryIds - sharedTargets
+        if (categorizedByShare.isNotEmpty() && defaultsToLeave.isNotEmpty()) {
+            CategoryMangaTable.deleteWhere {
+                (CategoryMangaTable.manga inList categorizedByShare.toList()) and (CategoryMangaTable.category inList defaultsToLeave.toList())
+            }
+        }
+
         // accounts other than the first only see manga that are in one of their categories, so manga without one go
         // where the WebUI puts newly added manga: into the categories flagged as default
         val affected = newManga + removedLinks.map { it.second }.filter { it !in removedManga && it in recipientLibrary }
@@ -813,11 +839,6 @@ object LibraryShare {
                 .where { CategoryMangaTable.category inList ownCategoryIds }
                 .map { it[CategoryMangaTable.manga].value }
                 .toSet()
-        val defaultCategoryIds =
-            CategoryTable
-                .select(CategoryTable.id)
-                .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq 0) and (CategoryTable.isDefault eq true) }
-                .map { it[CategoryTable.id].value }
         (affected - categorized).forEach { mangaId ->
             defaultCategoryIds.forEach { categoryId ->
                 CategoryMangaTable.insert {
