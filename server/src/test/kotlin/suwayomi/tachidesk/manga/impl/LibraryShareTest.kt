@@ -512,6 +512,24 @@ class LibraryShareTest : ApplicationTest() {
     }
 
     @Test
+    fun `categories the recipient sets themselves next to the default one are left alone by the sync`() {
+        val a = createLibraryManga("a")
+        addToLibrary(a)
+        val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true, mirror = true)
+        LibraryShare.accept(shareId, recipient.id, autoSync = true)
+        assertEquals(listOf("Default"), recipientCategoriesOf(a))
+
+        // the recipient puts it into a category of their own as well, the sender did not change anything
+        transaction {
+            val mine = CategoryTable.insertAndGetId { it[name] = "Mine"; it[user] = EntityID(recipient.id, UserTable) }.value
+            CategoryMangaTable.insert { it[category] = mine; it[manga] = a }
+        }
+        LibraryShare.syncNow(shareId, recipient.id)
+
+        assertEquals(listOf("Default", "Mine"), recipientCategoriesOf(a).sorted())
+    }
+
+    @Test
     fun `one for one keeps the order of shared categories equal in both directions`() {
         val a = createLibraryManga("a")
         addToLibrary(a)

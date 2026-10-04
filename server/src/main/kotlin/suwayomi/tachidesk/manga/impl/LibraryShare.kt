@@ -804,20 +804,12 @@ object LibraryShare {
                 }
             }
 
-        // a manga that sits in a shared category is not "uncategorized" any more: it leaves the default categories it was
-        // put into while it had none (one for one shares also fix what an earlier sync left behind)
-        // (the Default categories are paired for the order only, they are not shared categories)
+        // a manga the sender just put into a shared category is not "uncategorized" any more: it leaves the default
+        // categories it was put into while it had none. Only when the sender changed it, what the recipient sets on
+        // their own (a second category next to the default one) is left alone.
         val sharedTargets = mapping.filterKeys { it in senderCategoryIds }.values.toSet()
         val categorizedByShare =
-            if (row[LibraryShareTable.mirror]) {
-                CategoryMangaTable
-                    .select(CategoryMangaTable.manga)
-                    .where { CategoryMangaTable.category inList sharedTargets.toList() }
-                    .map { it[CategoryMangaTable.manga].value }
-                    .toSet()
-            } else {
-                addedLinks.filter { (categoryId, mangaId) -> mangaId in recipientLibrary && categoryId in targetOf }.map { it.second }.toSet()
-            }
+            addedLinks.filter { (categoryId, mangaId) -> mangaId in recipientLibrary && categoryId in targetOf }.map { it.second }.toSet()
         val defaultsToLeave = defaultCategoryIds - sharedTargets
         if (categorizedByShare.isNotEmpty() && defaultsToLeave.isNotEmpty()) {
             CategoryMangaTable.deleteWhere {
