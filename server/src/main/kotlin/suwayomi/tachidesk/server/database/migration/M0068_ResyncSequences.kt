@@ -26,6 +26,8 @@ class M0068_ResyncSequences : SQLMigration() {
         }
     }
 
+    // GREATEST: a table whose only row has id 0 (the default category) must not set the counter to 0, which is out of
+    // bounds for a sequence and made a brand new database fail to start
     // the check for a sequence is inside the loop: in the SELECT the database may run it for tables without an id column
     private fun postgresQuery() =
         """
@@ -41,7 +43,7 @@ class M0068_ResyncSequences : SQLMigration() {
             LOOP
                 IF pg_get_serial_sequence(format('%I.%I', col.table_schema, col.table_name), 'id') IS NOT NULL THEN
                     EXECUTE format(
-                        'SELECT setval(pg_get_serial_sequence(%L, %L), COALESCE((SELECT MAX(id) FROM %I.%I), 1))',
+                        'SELECT setval(pg_get_serial_sequence(%L, %L), GREATEST(COALESCE((SELECT MAX(id) FROM %I.%I), 1), 1))',
                         format('%I.%I', col.table_schema, col.table_name), 'id', col.table_schema, col.table_name
                     );
                 END IF;

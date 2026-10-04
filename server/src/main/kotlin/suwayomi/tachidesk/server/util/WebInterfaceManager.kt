@@ -644,8 +644,8 @@ object WebInterfaceManager {
             return BuildConfig.WEBUI_TAG
         }
 
-        if (flavor.versionMappingUrl.isBlank()) {
-            // a custom WebUI has no mapping file, so there is nothing to update from
+        if (!flavor.versionMappingUrl.startsWith("http")) {
+            // the custom WebUI only has a placeholder instead of a mapping file URL, so there is nothing to update from
             return getLocalVersion()
         }
 

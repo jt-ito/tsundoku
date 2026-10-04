@@ -116,6 +116,7 @@ object DatabaseMigrationService {
             suwayomi.tachidesk.manga.model.table.UserChapterTable,
             suwayomi.tachidesk.manga.model.table.LibraryShareTable,
             suwayomi.tachidesk.manga.model.table.LibraryShareDeliveredTable,
+            suwayomi.tachidesk.manga.model.table.LibraryShareCategoryTable,
         )
 
     // the same tables, by their actual SQL name - used to resync each engine's own auto-increment/sequence
@@ -569,7 +570,7 @@ object DatabaseMigrationService {
             for (tbl in SEQUENCE_TABLE_NAMES) {
                 try {
                     exec(
-                        "SELECT setval(pg_get_serial_sequence('suwayomi.$tbl', 'id'), COALESCE((SELECT MAX(id) FROM suwayomi.$tbl), 1));",
+                        "SELECT setval(pg_get_serial_sequence('suwayomi.$tbl', 'id'), GREATEST(COALESCE((SELECT MAX(id) FROM suwayomi.$tbl), 1), 1));",
                     )
                 } catch (e: Exception) {
                     logger.debug(e) { "Sequence set for suwayomi.$tbl skipped or failed: ${e.message}" }

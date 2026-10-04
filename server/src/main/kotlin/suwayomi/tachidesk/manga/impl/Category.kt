@@ -121,10 +121,15 @@ object Category {
         }
     }
 
-    /** Move the category to 1-based [position] among the non-default categories, ignoring raw order values. */
+    /**
+     * Move the category to 1-based [position] among the categories of the account, ignoring raw order values. Only the
+     * account's own categories count (plus the default one when it is shown): the positions the WebUI sends are indexes
+     * into that list, other accounts' categories must not shift them.
+     */
     fun moveCategoryToPosition(
         categoryId: Int,
         position: Int,
+        userId: Int = 1,
     ) {
         require(position > 0) { "'position' must be > 0" }
         transaction {
@@ -132,8 +137,9 @@ object Category {
             val categories =
                 CategoryTable
                     .selectAll()
-                    .where { if (showDefault) Op.TRUE else CategoryTable.id neq DEFAULT_CATEGORY_ID }
-                    .orderBy(CategoryTable.order to SortOrder.ASC, CategoryTable.id to SortOrder.ASC)
+                    .where {
+                        CategoryTable.ownedBy(userId) and (if (showDefault) Op.TRUE else CategoryTable.id neq DEFAULT_CATEGORY_ID)
+                    }.orderBy(CategoryTable.order to SortOrder.ASC, CategoryTable.id to SortOrder.ASC)
                     .toMutableList()
             val from = categories.indexOfFirst { it[CategoryTable.id].value == categoryId }
             if (from == -1) return@transaction
