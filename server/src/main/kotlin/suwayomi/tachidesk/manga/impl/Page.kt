@@ -11,7 +11,15 @@ import eu.kanade.tachiyomi.source.local.LocalSource
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.online.HttpSource
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import libcore.net.MimeUtils
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
@@ -33,6 +41,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
+import java.util.concurrent.ConcurrentHashMap
 import javax.imageio.IIOImage
 import javax.imageio.ImageIO
 import javax.imageio.ImageWriteParam
@@ -40,6 +49,38 @@ import javax.imageio.ImageWriter
 
 object Page {
     private val logger = KotlinLogging.logger {}
+
+    private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val prefetching = ConcurrentHashMap.newKeySet<Int>()
+
+    /**
+     * Fetches the pages of a chapter into the server's cache in the background (a couple at a time, from the page being
+     * read on), so the reader and the page thumbnails find them ready instead of each triggering a download on demand.
+     */
+    fun prefetchChapter(
+        mangaId: Int,
+        chapterId: Int,
+        pageCount: Int,
+        startAt: Int,
+    ) {
+        if (pageCount <= 0 || !prefetching.add(chapterId)) return
+        prefetchScope.launch {
+            try {
+                val permits = Semaphore(2)
+                (0 until pageCount)
+                    .map { (it + startAt) % pageCount }
+                    .map { index ->
+                        async {
+                            permits.withPermit {
+                                runCatching { getPageImage(mangaId = mangaId, chapterId = chapterId, index = index).first.close() }
+                            }
+                        }
+                    }.awaitAll()
+            } finally {
+                prefetching.remove(chapterId)
+            }
+        }
+    }
 
     /**
      * A page might have a imageUrl ready from the get go, or we might need to

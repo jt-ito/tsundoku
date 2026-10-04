@@ -33,6 +33,7 @@ import suwayomi.tachidesk.graphql.types.MetaInput
 import suwayomi.tachidesk.graphql.types.SyncConflictInfoType
 import suwayomi.tachidesk.manga.impl.Chapter
 import suwayomi.tachidesk.manga.impl.Manga
+import suwayomi.tachidesk.manga.impl.Page
 import suwayomi.tachidesk.manga.impl.chapter.getChapterDownloadReadyById
 import suwayomi.tachidesk.manga.impl.sync.KoreaderSyncService
 import suwayomi.tachidesk.manga.model.table.ChapterMetaTable
@@ -496,6 +497,9 @@ class ChapterMutation {
 
         return future {
             var chapter = getChapterDownloadReadyById(chapterId)
+            if (!chapter.downloaded) {
+                Page.prefetchChapter(chapter.mangaId, chapter.id, chapter.pageCount, chapter.lastPageRead)
+            }
             val syncResult = KoreaderSyncService.checkAndPullProgress(chapter.id)
             var syncConflictInfo: SyncConflictInfoType? = null
 
