@@ -16,6 +16,7 @@ import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.or
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.insertAndGetId
 import org.jetbrains.exposed.v1.jdbc.select
@@ -24,6 +25,7 @@ import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.update
 import suwayomi.tachidesk.manga.model.table.CategoryMangaTable
 import suwayomi.tachidesk.manga.model.table.CategoryTable
+import suwayomi.tachidesk.manga.model.table.LibraryShareCategoryTable
 import suwayomi.tachidesk.manga.model.table.LibraryShareDeliveredTable
 import suwayomi.tachidesk.manga.model.table.LibraryShareTable
 import suwayomi.tachidesk.manga.model.table.MangaTable
@@ -36,6 +38,7 @@ import java.util.Timer
 import java.util.TimerTask
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /**
@@ -64,6 +67,10 @@ object LibraryShare {
         val lastSyncedAt: Long,
         val pairedWith: Int?,
         val twoWayStatus: Status?,
+        val mirror: Boolean,
+        val proposedSynced: Boolean?,
+        val proposedMirror: Boolean?,
+        val proposedBy: Int?,
     )
 
     private fun ResultRow.categoryIdList() = this[LibraryShareTable.categoryIds].split(",").mapNotNull { it.toIntOrNull() }
@@ -89,8 +96,10 @@ object LibraryShare {
         categoryIds: List<Int>,
         synced: Boolean = false,
         pairedWith: Int? = null,
+        mirror: Boolean = false,
     ): Int =
         transaction {
+            require(!mirror || synced) { "One for one needs a synced share" }
             val recipientId =
                 UserTable
                     .selectAll()
@@ -124,6 +133,7 @@ object LibraryShare {
                             (LibraryShareTable.scope eq scope.name) and
                             (LibraryShareTable.categoryIds eq idsText) and
                             (LibraryShareTable.synced eq synced) and
+                            (LibraryShareTable.mirror eq mirror) and
                             (LibraryShareTable.status eq Status.PENDING.name)
                     }.empty()
                     .not()
@@ -138,6 +148,7 @@ object LibraryShare {
                     it[createdAt] = Instant.now().epochSecond
                     it[LibraryShareTable.synced] = synced
                     it[LibraryShareTable.pairedWith] = pairedWith
+                    it[LibraryShareTable.mirror] = mirror
                 }.value
         }
 
@@ -228,7 +239,7 @@ object LibraryShare {
                     emptyList()
                 }
             val senderName = UserTable.selectAll().where { UserTable.id eq row[LibraryShareTable.sender].value }.first()[UserTable.username]
-            create(userId, senderName, scope, ownIds, synced = true, pairedWith = shareId)
+            create(userId, senderName, scope, ownIds, synced = true, pairedWith = shareId, mirror = row[LibraryShareTable.mirror])
         }
 
     private fun activeSynced(
@@ -270,6 +281,95 @@ object LibraryShare {
         }
     }
 
+    private fun acceptedShareOf(
+        shareId: Int,
+        userId: Int,
+    ): ResultRow {
+        val row = LibraryShareTable.selectAll().where { LibraryShareTable.id eq shareId }.firstOrNull()
+        require(row != null && (row[LibraryShareTable.sender].value == userId || row[LibraryShareTable.recipient].value == userId)) {
+            "Unknown share"
+        }
+        require(row[LibraryShareTable.status] == Status.ACCEPTED.name) { "Only a share that was accepted can be changed" }
+        return row
+    }
+
+    /**
+     * Either account proposes new settings (synced, one for one) for a share that was accepted. They only apply once the
+     * other account confirms. Leaving a share (stop syncing, remove) never needs a confirmation, changing its terms does.
+     */
+    fun proposeEdit(
+        shareId: Int,
+        userId: Int,
+        synced: Boolean,
+        mirror: Boolean,
+    ) = transaction {
+        val row = acceptedShareOf(shareId, userId)
+        require(!mirror || synced) { "One for one needs a synced share" }
+        require(row[LibraryShareTable.proposedBy] == null) { "A change of this share is already waiting for confirmation" }
+        require(synced != row[LibraryShareTable.synced] || mirror != row[LibraryShareTable.mirror]) { "Nothing would change" }
+        LibraryShareTable.update({ LibraryShareTable.id eq shareId }) {
+            it[proposedSynced] = synced
+            it[proposedMirror] = mirror
+            it[proposedBy] = userId
+        }
+    }
+
+    private fun clearProposal(shareId: Int) {
+        LibraryShareTable.update({ LibraryShareTable.id eq shareId }) {
+            it[proposedSynced] = null
+            it[proposedMirror] = null
+            it[proposedBy] = null
+        }
+    }
+
+    /** The account that did not propose confirms (applies the settings) or declines. */
+    fun respondToEdit(
+        shareId: Int,
+        userId: Int,
+        accept: Boolean,
+    ) = transaction {
+        val row = acceptedShareOf(shareId, userId)
+        val proposer = row[LibraryShareTable.proposedBy]
+        require(proposer != null) { "There is nothing to confirm" }
+        require(proposer != userId) { "The other account has to confirm your change" }
+        if (accept) {
+            val synced = row[LibraryShareTable.proposedSynced] ?: row[LibraryShareTable.synced]
+            val mirror = (row[LibraryShareTable.proposedMirror] ?: row[LibraryShareTable.mirror]) && synced
+            LibraryShareTable.update({ LibraryShareTable.id eq shareId }) {
+                it[LibraryShareTable.synced] = synced
+                it[LibraryShareTable.mirror] = mirror
+                if (!synced) it[autoSync] = false
+            }
+        }
+        clearProposal(shareId)
+    }
+
+    /** The account that proposed a change takes it back. */
+    fun cancelEdit(
+        shareId: Int,
+        userId: Int,
+    ) = transaction {
+        val row = acceptedShareOf(shareId, userId)
+        require(row[LibraryShareTable.proposedBy] == userId) { "Only the account that proposed the change can take it back" }
+        clearProposal(shareId)
+    }
+
+    /**
+     * Deletes a share that is not waiting for an answer. Syncing ends right away for both accounts, what was copied
+     * stays. Either account may do it, nobody has to confirm leaving.
+     */
+    fun remove(
+        shareId: Int,
+        userId: Int,
+    ) = transaction {
+        val row = LibraryShareTable.selectAll().where { LibraryShareTable.id eq shareId }.firstOrNull()
+        require(row != null && (row[LibraryShareTable.sender].value == userId || row[LibraryShareTable.recipient].value == userId)) {
+            "Unknown share"
+        }
+        require(row[LibraryShareTable.status] != Status.PENDING.name) { "Answer or cancel the request first" }
+        LibraryShareTable.deleteWhere { LibraryShareTable.id eq shareId }
+    }
+
     /** Pending shares are cancelled, a share that is already accepted just stops syncing. */
     fun cancelOrStop(
         shareId: Int,
@@ -298,14 +398,17 @@ object LibraryShare {
 
     private val syncExecutor =
         Executors.newSingleThreadScheduledExecutor { runnable -> Thread(runnable, "library-share-sync-now").apply { isDaemon = true } }
-    private val pendingSyncs = ConcurrentHashMap.newKeySet<Int>()
+    private val pendingSyncs = ConcurrentHashMap<Int, ScheduledFuture<*>>()
 
     /**
-     * Syncs the automatic shares the account sends or receives, shortly from now. Many changes in a row (adding fifty
-     * manga one by one) are collected into one sync. Never blocks or fails the caller.
+     * Syncs the automatic shares the account sends or receives, shortly after the last change. Many changes in a row
+     * (adding fifty manga one by one, migrating a series: add the new one, then remove the old one) are collected into
+     * one sync, the timer starts over with every change. Never blocks or fails the caller.
      */
     fun requestSync(userId: Int) {
-        if (pendingSyncs.add(userId)) {
+        // ponytail: no upper limit, a change every few seconds for minutes delays the sync until it stops (the 15 minute timer still runs)
+        pendingSyncs.compute(userId) { _, pending ->
+            pending?.cancel(false)
             syncExecutor.schedule(
                 {
                     pendingSyncs.remove(userId)
@@ -373,9 +476,181 @@ object LibraryShare {
         }
     }
 
+    private fun unmarkDelivered(
+        shareId: Int,
+        kind: String,
+        refs: Collection<Int>,
+    ) {
+        if (refs.isEmpty()) return
+        LibraryShareDeliveredTable.deleteWhere {
+            (LibraryShareDeliveredTable.share eq shareId) and
+                (LibraryShareDeliveredTable.kind eq kind) and
+                (LibraryShareDeliveredTable.ref inList refs.toList())
+        }
+    }
+
+    /** sender category id -> recipient category id */
+    private fun categoryMapping(shareId: Int): Map<Int, Int> =
+        LibraryShareCategoryTable
+            .selectAll()
+            .where { LibraryShareCategoryTable.share eq shareId }
+            .associate { it[LibraryShareCategoryTable.senderCategory].value to it[LibraryShareCategoryTable.recipientCategory].value }
+
     /**
-     * Copies the manga and categories of the sender that this share has not delivered yet. Reading state is never
-     * copied. What was delivered once is not delivered again, so a manga the recipient removed does not come back.
+     * One for one shares keep the names of the paired categories equal. Whichever side changed its name since the two
+     * were last equal wins (the sender if both did). A name the other account already uses is skipped, so renaming
+     * never makes two categories of one account share a name.
+     */
+    private fun mirrorCategoryNames(shareId: Int) {
+        val names = CategoryTable.selectAll().associate { it[CategoryTable.id].value to it[CategoryTable.name] }
+        val owners = CategoryTable.selectAll().associate { it[CategoryTable.id].value to it[CategoryTable.user]?.value }
+        fun taken(
+            owner: Int?,
+            name: String,
+            except: Int,
+        ) = names.any { (id, other) -> id != except && owners[id] == owner && other.equals(name, ignoreCase = true) }
+
+        LibraryShareCategoryTable.selectAll().where { LibraryShareCategoryTable.share eq shareId }.forEach { pair ->
+            val senderId = pair[LibraryShareCategoryTable.senderCategory].value
+            val recipientId = pair[LibraryShareCategoryTable.recipientCategory].value
+            val senderName = names[senderId] ?: return@forEach
+            val recipientName = names[recipientId] ?: return@forEach
+            val last = pair[LibraryShareCategoryTable.lastName]
+            val newName =
+                when {
+                    senderName != last && !senderName.equals(Category.DEFAULT_CATEGORY_NAME, ignoreCase = true) -> senderName
+                    recipientName != last && !recipientName.equals(Category.DEFAULT_CATEGORY_NAME, ignoreCase = true) -> recipientName
+                    else -> return@forEach
+                }
+            val renameSender = newName != senderName
+            val renameRecipient = newName != recipientName
+            if (renameSender && taken(owners[senderId], newName, senderId)) return@forEach
+            if (renameRecipient && taken(owners[recipientId], newName, recipientId)) return@forEach
+            if (renameSender) CategoryTable.update({ CategoryTable.id eq senderId }) { it[CategoryTable.name] = newName }
+            if (renameRecipient) CategoryTable.update({ CategoryTable.id eq recipientId }) { it[CategoryTable.name] = newName }
+            LibraryShareCategoryTable.update({ LibraryShareCategoryTable.id eq pair[LibraryShareCategoryTable.id].value }) {
+                it[LibraryShareCategoryTable.lastName] = newName
+            }
+        }
+    }
+
+    /**
+     * One for one shares also keep the order of the paired categories equal. Whichever side was reordered since the last
+     * sync wins (the sender if both were). The categories that are not paired keep their places.
+     */
+    private fun mirrorCategoryOrder(shareId: Int) {
+        // the two accounts' Default categories take part in the order too (they are never shared, only placed)
+        fun defaultOf(owner: Int) =
+            CategoryTable
+                .selectAll()
+                .where { CategoryTable.ownedBy(owner) }
+                .firstOrNull { it[CategoryTable.name].equals(Category.DEFAULT_CATEGORY_NAME, ignoreCase = true) }
+                ?.get(CategoryTable.id)
+                ?.value
+        val share = LibraryShareTable.selectAll().where { LibraryShareTable.id eq shareId }.first()
+        val senderDefault = defaultOf(share[LibraryShareTable.sender].value)
+        val recipientDefault = defaultOf(share[LibraryShareTable.recipient].value)
+        if (senderDefault != null && recipientDefault != null &&
+            LibraryShareCategoryTable.selectAll().where { (LibraryShareCategoryTable.share eq shareId) and (LibraryShareCategoryTable.senderCategory eq senderDefault) }.empty()
+        ) {
+            LibraryShareCategoryTable.insert {
+                it[LibraryShareCategoryTable.share] = EntityID(shareId, LibraryShareTable)
+                it[LibraryShareCategoryTable.senderCategory] = EntityID(senderDefault, CategoryTable)
+                it[LibraryShareCategoryTable.recipientCategory] = EntityID(recipientDefault, CategoryTable)
+                it[LibraryShareCategoryTable.lastName] = Category.DEFAULT_CATEGORY_NAME
+            }
+        }
+
+        val pairs =
+            LibraryShareCategoryTable.selectAll().where { LibraryShareCategoryTable.share eq shareId }.toList()
+        if (pairs.size < 2) return
+        val orders = CategoryTable.selectAll().associate { it[CategoryTable.id].value to it[CategoryTable.order] }
+
+        fun sequence(pick: (ResultRow) -> Int) =
+            pairs.filter { pick(it) in orders }.sortedWith(compareBy({ orders[pick(it)] }, { pick(it) })).map { it[LibraryShareCategoryTable.id].value }
+
+        val sender = sequence { it[LibraryShareCategoryTable.senderCategory].value }
+        val recipient = sequence { it[LibraryShareCategoryTable.recipientCategory].value }
+        val last = pairs.sortedBy { it[LibraryShareCategoryTable.lastPosition] ?: Int.MAX_VALUE }.map { it[LibraryShareCategoryTable.id].value }
+        val agreed =
+            when {
+                sender != last || pairs.any { it[LibraryShareCategoryTable.lastPosition] == null } -> sender
+                recipient != last -> recipient
+                else -> return
+            }
+        if (sender.size != pairs.size) return
+
+        // the account that does not already have this order gets the paired categories re-slotted
+        listOf(sender to LibraryShareCategoryTable.senderCategory, recipient to LibraryShareCategoryTable.recipientCategory)
+            .filter { (current, _) -> current != agreed }
+            .forEach { (_, column) ->
+                val byPair = pairs.associate { it[LibraryShareCategoryTable.id].value to it[column].value }
+                val owner = CategoryTable.selectAll().where { CategoryTable.id eq byPair.values.first() }.first()[CategoryTable.user]?.value ?: return@forEach
+                val own =
+                    CategoryTable
+                        .selectAll()
+                        .where { CategoryTable.ownedBy(owner) }
+                        .orderBy(CategoryTable.order to SortOrder.ASC, CategoryTable.id to SortOrder.ASC)
+                        .map { it[CategoryTable.id].value }
+                val paired = byPair.values.toSet()
+                val slots = own.indices.filter { own[it] in paired }
+                val reordered = own.toMutableList()
+                agreed.forEachIndexed { index, pairId -> reordered[slots[index]] = byPair.getValue(pairId) }
+                reordered.forEachIndexed { index, id ->
+                    CategoryTable.update({ CategoryTable.id eq id }) { it[CategoryTable.order] = index + 1 }
+                }
+            }
+        Category.normalizeCategories()
+        agreed.forEachIndexed { index, pairId ->
+            LibraryShareCategoryTable.update({ LibraryShareCategoryTable.id eq pairId }) { it[lastPosition] = index }
+        }
+    }
+
+    /** The (category, manga) links of the sender as they were at the last sync. */
+    private fun deliveredLinks(shareId: Int): Set<Pair<Int, Int>> =
+        LibraryShareDeliveredTable
+            .selectAll()
+            .where { (LibraryShareDeliveredTable.share eq shareId) and (LibraryShareDeliveredTable.kind eq "LINK") }
+            .mapNotNull { row -> row[LibraryShareDeliveredTable.ref2]?.let { row[LibraryShareDeliveredTable.ref] to it } }
+            .toSet()
+
+    private fun markDeliveredLinks(
+        shareId: Int,
+        links: Collection<Pair<Int, Int>>,
+    ) {
+        links.forEach { (categoryId, mangaId) ->
+            LibraryShareDeliveredTable.insert {
+                it[share] = EntityID(shareId, LibraryShareTable)
+                it[LibraryShareDeliveredTable.kind] = "LINK"
+                it[LibraryShareDeliveredTable.ref] = categoryId
+                it[LibraryShareDeliveredTable.ref2] = mangaId
+            }
+        }
+    }
+
+    private fun unmarkDeliveredLinks(
+        shareId: Int,
+        links: Collection<Pair<Int, Int>>,
+    ) {
+        links.forEach { (categoryId, mangaId) ->
+            LibraryShareDeliveredTable.deleteWhere {
+                (LibraryShareDeliveredTable.share eq shareId) and
+                    (LibraryShareDeliveredTable.kind eq "LINK") and
+                    (LibraryShareDeliveredTable.ref eq categoryId) and
+                    (LibraryShareDeliveredTable.ref2 eq mangaId)
+            }
+        }
+    }
+
+    /**
+     * Brings the recipient up to date with what the sender shares, comparing with what the share delivered before:
+     * - manga that are new are added, manga that left the shared set are removed again,
+     * - categories that are new are created (matched by name among the recipient's own),
+     * - manga that were put into or taken out of a shared category follow, so moving a manga to another category
+     *   moves it for the recipient too.
+     * Only what changed on the sender's side since the last sync is applied: a manga the recipient removed, or moved
+     * to a category of their own, is left alone until the sender changes that manga again. Reading state is never
+     * copied. Returns the number of manga added.
      */
     private fun deliver(row: ResultRow): Int {
         val shareId = row[LibraryShareTable.id].value
@@ -392,26 +667,52 @@ object LibraryShare {
         val senderCategoryIds = senderCategories.map { it[CategoryTable.id].value }
 
         val senderLibrary = libraryOf(senderId)
-        val links =
+        val currentLinks =
             CategoryMangaTable
                 .selectAll()
                 .where { CategoryMangaTable.category inList senderCategoryIds }
                 .map { it[CategoryMangaTable.category].value to it[CategoryMangaTable.manga].value }
                 .filter { (_, mangaId) -> mangaId in senderLibrary }
-        val mangaIds = if (scope == Scope.LIBRARY) senderLibrary else links.map { it.second }.toSet()
+                .toSet()
+        val mangaIds = if (scope == Scope.LIBRARY) senderLibrary else currentLinks.map { it.second }.toSet()
 
-        val newManga = mangaIds - delivered(shareId, "MANGA")
+        val deliveredManga = delivered(shareId, "MANGA")
+        val newManga = mangaIds - deliveredManga
+        // ponytail: an empty sender library never removes anything, it is far more likely to be a glitch than a clean-out
+        val removedManga = if (mangaIds.isEmpty()) emptySet() else deliveredManga - mangaIds
         val newCategoryIds = senderCategoryIds.toSet() - delivered(shareId, "CATEGORY")
-        val newLinks = links.filter { (categoryId, mangaId) -> mangaId in newManga || categoryId in newCategoryIds }
+        val previousLinks = deliveredLinks(shareId)
+        val addedLinks = currentLinks - previousLinks
+        val removedLinks = previousLinks - currentLinks
 
         val now = Instant.now().epochSecond
+        val recipientCategories = CategoryTable.selectAll().where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq 0) }.toList()
+        val recipientCategoryIds = recipientCategories.map { it[CategoryTable.id].value }
+
+        // series the sender migrated to another source: the recipient's progress and trackers move to the new one
+        MangaSwap.carryOver(senderId, userId, removedManga)
+
+        // manga that left the shared set leave the recipient's library and categories as well
+        if (removedManga.isNotEmpty()) {
+            UserMangaTable.update({ (UserMangaTable.user eq userId) and (UserMangaTable.manga inList removedManga.toList()) }) {
+                it[inLibrary] = false
+            }
+            if (userId == 1) {
+                // the first account is mirrored into the manga table
+                MangaTable.update({ MangaTable.id inList removedManga.toList() }) { it[inLibrary] = false }
+            }
+            CategoryMangaTable.deleteWhere {
+                (CategoryMangaTable.manga inList removedManga.toList()) and (CategoryMangaTable.category inList recipientCategoryIds)
+            }
+        }
+
+        // manga the recipient already has are neither added again nor counted as added
+        val libraryBefore = libraryOf(userId)
         val alreadyOwned =
             UserMangaTable
                 .selectAll()
-                .where { (UserMangaTable.user eq userId) and (UserMangaTable.manga inList newManga) }
+                .where { (UserMangaTable.user eq userId) and (UserMangaTable.manga inList newManga.toList()) }
                 .associateBy { it[UserMangaTable.manga].value }
-        // manga the recipient already has are neither added again nor counted as added
-        val libraryBefore = libraryOf(userId)
         var added = 0
         newManga.forEach { mangaId ->
             val own = alreadyOwned[mangaId]
@@ -432,33 +733,53 @@ object LibraryShare {
             }
         }
         if (userId == 1 && newManga.isNotEmpty()) {
-            // the first account is mirrored into the manga table
-            MangaTable.update({ (MangaTable.id inList newManga) and (MangaTable.inLibrary eq false) }) {
+            MangaTable.update({ (MangaTable.id inList newManga.toList()) and (MangaTable.inLibrary eq false) }) {
                 it[inLibrary] = true
                 it[inLibraryAt] = now
             }
         }
 
-        // categories are matched by name among the recipient's own, missing ones are created
-        val ownCategories = CategoryTable.selectAll().where { CategoryTable.ownedBy(userId) }.associateBy { it[CategoryTable.name].lowercase() }
-        val categoriesToPlace = newCategoryIds + newLinks.map { it.first }
-        val targetByName = mutableMapOf<String, Int>()
+        // a category of the sender is followed by one category of the recipient, remembered by id, so the recipient
+        // can rename theirs without losing it. The first time it is matched by name among the recipient's own, or created.
+        val mapping = categoryMapping(shareId).toMutableMap()
+        val ownCategories = recipientCategories.associateBy { it[CategoryTable.name].lowercase() }
+        val categoriesToPlace = newCategoryIds + addedLinks.map { it.first }
         val targetOf =
             senderCategories.filter { it[CategoryTable.id].value in categoriesToPlace }.associate { cat ->
+                val senderCategoryId = cat[CategoryTable.id].value
                 val name = cat[CategoryTable.name]
-                cat[CategoryTable.id].value to
-                    targetByName.getOrPut(name.lowercase()) {
-                        ownCategories[name.lowercase()]?.get(CategoryTable.id)?.value
-                            ?: CategoryTable
-                                .insertAndGetId {
-                                    it[CategoryTable.name] = name
-                                    it[CategoryTable.order] = Int.MAX_VALUE
-                                    it[user] = EntityID(userId, UserTable)
-                                }.value
-                    }
+                val target =
+                    mapping[senderCategoryId]
+                        ?: (
+                            ownCategories[name.lowercase()]?.get(CategoryTable.id)?.value?.takeIf { it !in mapping.values }
+                                ?: CategoryTable
+                                    .insertAndGetId {
+                                        it[CategoryTable.name] = name
+                                        it[CategoryTable.order] = Int.MAX_VALUE
+                                        it[user] = EntityID(userId, UserTable)
+                                    }.value
+                        ).also { created ->
+                            LibraryShareCategoryTable.insert {
+                                it[LibraryShareCategoryTable.share] = EntityID(shareId, LibraryShareTable)
+                                it[LibraryShareCategoryTable.senderCategory] = EntityID(senderCategoryId, CategoryTable)
+                                it[LibraryShareCategoryTable.recipientCategory] = EntityID(created, CategoryTable)
+                                it[LibraryShareCategoryTable.lastName] = name
+                            }
+                            mapping[senderCategoryId] = created
+                        }
+                senderCategoryId to target
             }
         Category.normalizeCategories()
 
+        // manga taken out of a shared category are taken out of the matching category of the recipient
+        removedLinks.filter { (_, mangaId) -> mangaId !in removedManga }.forEach { (senderCategoryId, mangaId) ->
+            val target = mapping[senderCategoryId]
+            if (target != null) {
+                CategoryMangaTable.deleteWhere { (CategoryMangaTable.category eq target) and (CategoryMangaTable.manga eq mangaId) }
+            }
+        }
+
+        // manga put into a shared category are put into the matching category of the recipient
         val recipientLibrary = libraryOf(userId)
         val existingLinks =
             CategoryMangaTable
@@ -466,8 +787,8 @@ object LibraryShare {
                 .where { CategoryMangaTable.category inList targetOf.values.toList() }
                 .map { it[CategoryMangaTable.category].value to it[CategoryMangaTable.manga].value }
                 .toSet()
-        newLinks
-            .filter { (_, mangaId) -> mangaId in recipientLibrary }
+        addedLinks
+            .filter { (categoryId, mangaId) -> mangaId in recipientLibrary && categoryId in targetOf }
             .map { (categoryId, mangaId) -> targetOf.getValue(categoryId) to mangaId }
             .distinct()
             .filter { it !in existingLinks }
@@ -480,6 +801,7 @@ object LibraryShare {
 
         // accounts other than the first only see manga that are in one of their categories, so manga without one go
         // where the WebUI puts newly added manga: into the categories flagged as default
+        val affected = newManga + removedLinks.map { it.second }.filter { it !in removedManga && it in recipientLibrary }
         val ownCategoryIds =
             CategoryTable
                 .select(CategoryTable.id)
@@ -496,7 +818,7 @@ object LibraryShare {
                 .select(CategoryTable.id)
                 .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq 0) and (CategoryTable.isDefault eq true) }
                 .map { it[CategoryTable.id].value }
-        (newManga - categorized).forEach { mangaId ->
+        (affected - categorized).forEach { mangaId ->
             defaultCategoryIds.forEach { categoryId ->
                 CategoryMangaTable.insert {
                     it[category] = categoryId
@@ -505,8 +827,17 @@ object LibraryShare {
             }
         }
 
+        if (row[LibraryShareTable.mirror]) {
+            mirrorCategoryNames(shareId)
+            mirrorCategoryOrder(shareId)
+        }
+
+        // what was delivered now, to compare with next time
         markDelivered(shareId, "MANGA", newManga)
+        unmarkDelivered(shareId, "MANGA", removedManga)
         markDelivered(shareId, "CATEGORY", newCategoryIds)
+        markDeliveredLinks(shareId, addedLinks)
+        unmarkDeliveredLinks(shareId, removedLinks)
         LibraryShareTable.update({ LibraryShareTable.id eq shareId }) { it[lastSyncedAt] = now }
         return added
     }
@@ -580,6 +911,10 @@ object LibraryShare {
             lastSyncedAt = row[LibraryShareTable.lastSyncedAt],
             pairedWith = row[LibraryShareTable.pairedWith],
             twoWayStatus = twoWayRequestOf(row[LibraryShareTable.id].value)?.let { Status.valueOf(it[LibraryShareTable.status]) },
+            mirror = row[LibraryShareTable.mirror],
+            proposedSynced = row[LibraryShareTable.proposedSynced],
+            proposedMirror = row[LibraryShareTable.proposedMirror],
+            proposedBy = row[LibraryShareTable.proposedBy],
         )
     }
 }

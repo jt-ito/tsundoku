@@ -37,6 +37,7 @@ import suwayomi.tachidesk.manga.model.dataclass.IncludeOrExclude
 import suwayomi.tachidesk.manga.model.table.CategoryMangaTable
 import suwayomi.tachidesk.manga.model.table.CategoryMetaTable
 import suwayomi.tachidesk.manga.model.table.CategoryTable
+import suwayomi.tachidesk.manga.model.table.ownedBy
 import suwayomi.tachidesk.manga.model.table.MangaTable
 
 class CategoryMutation {
@@ -296,10 +297,14 @@ class CategoryMutation {
     }
 
     @RequireAuth
-    fun updateCategory(input: UpdateCategoryInput): UpdateCategoryPayload? {
+    fun updateCategory(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: UpdateCategoryInput,
+    ): UpdateCategoryPayload? {
         val (clientMutationId, id, patch) = input
 
         updateCategories(listOf(id), patch)
+        if (patch.name != null) LibraryShare.requestSync(dataFetchingEnvironment.currentUserId())
 
         val category =
             transaction {
@@ -341,18 +346,23 @@ class CategoryMutation {
     )
 
     @RequireAuth
-    fun updateCategoryOrder(input: UpdateCategoryOrderInput): UpdateCategoryOrderPayload? {
+    fun updateCategoryOrder(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: UpdateCategoryOrderInput,
+    ): UpdateCategoryOrderPayload? {
         val (clientMutationId, categoryId, position) = input
+        val userId = dataFetchingEnvironment.currentUserId()
         require(position > 0) {
             "'order' must not be <= 0"
         }
 
         // position-based: stored sort_order values can collide (pre-existing adopted 0-based rows; sync skips newer local copies)
-        Category.moveCategoryToPosition(categoryId, position)
+        Category.moveCategoryToPosition(categoryId, position, userId)
+        LibraryShare.requestSync(userId)
 
         val categories =
             transaction {
-                CategoryTable.selectAll().orderBy(CategoryTable.order).map { CategoryType(it) }
+                CategoryTable.selectAll().where { CategoryTable.ownedBy(userId) }.orderBy(CategoryTable.order).map { CategoryType(it) }
             }
 
         return UpdateCategoryOrderPayload(

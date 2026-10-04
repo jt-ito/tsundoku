@@ -5,6 +5,7 @@ import suwayomi.tachidesk.graphql.server.getAttribute
 import suwayomi.tachidesk.graphql.types.LibraryShareScope
 import suwayomi.tachidesk.graphql.types.LibraryShareType
 import suwayomi.tachidesk.manga.impl.LibraryShare
+import suwayomi.tachidesk.manga.impl.MangaSwap
 import suwayomi.tachidesk.server.JavalinSetup.Attribute
 import suwayomi.tachidesk.server.user.requireUser
 
@@ -17,6 +18,8 @@ class LibraryShareMutation {
         val categoryIds: List<Int> = emptyList(),
         /** keep sharing new manga and categories after the recipient accepted */
         val synced: Boolean = false,
+        /** one for one: category renames follow in both directions, needs synced */
+        val mirror: Boolean = false,
     )
 
     data class LibraryShareChangePayload(
@@ -31,7 +34,7 @@ class LibraryShareMutation {
         input: CreateLibraryShareInput,
     ): LibraryShareChangePayload {
         val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
-        val id = LibraryShare.create(userId, input.username, LibraryShare.Scope.valueOf(input.scope.name), input.categoryIds, input.synced)
+        val id = LibraryShare.create(userId, input.username, LibraryShare.Scope.valueOf(input.scope.name), input.categoryIds, input.synced, mirror = input.mirror)
         return payload(input.clientMutationId, id, userId, 0)
     }
 
@@ -56,6 +59,31 @@ class LibraryShareMutation {
                 0
             }
         return payload(input.clientMutationId, input.id, userId, added)
+    }
+
+    data class RecordMangaSwapInput(
+        val clientMutationId: String? = null,
+        /** the series that was migrated away from */
+        val oldMangaId: Int,
+        /** the series it was migrated to */
+        val newMangaId: Int,
+    )
+
+    data class RecordMangaSwapPayload(
+        val clientMutationId: String?,
+    )
+
+    /**
+     * Tells the server that the account replaced a series with another one (a migration to another source), so shared
+     * libraries can move the other accounts' reading progress and trackers along with it.
+     */
+    fun recordMangaSwap(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: RecordMangaSwapInput,
+    ): RecordMangaSwapPayload {
+        val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
+        MangaSwap.record(userId, input.oldMangaId, input.newMangaId)
+        return RecordMangaSwapPayload(input.clientMutationId)
     }
 
     data class CancelLibraryShareInput(
@@ -114,6 +142,71 @@ class LibraryShareMutation {
         val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
         LibraryShare.requestTwoWay(input.id, userId)
         return payload(input.clientMutationId, input.id, userId, 0)
+    }
+
+    data class ProposeLibraryShareEditInput(
+        val clientMutationId: String? = null,
+        val id: Int,
+        val synced: Boolean,
+        val mirror: Boolean = false,
+    )
+
+    fun proposeLibraryShareEdit(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: ProposeLibraryShareEditInput,
+    ): LibraryShareChangePayload {
+        val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
+        LibraryShare.proposeEdit(input.id, userId, input.synced, input.mirror)
+        return payload(input.clientMutationId, input.id, userId, 0)
+    }
+
+    data class RespondToLibraryShareEditInput(
+        val clientMutationId: String? = null,
+        val id: Int,
+        val accept: Boolean,
+    )
+
+    fun respondToLibraryShareEdit(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: RespondToLibraryShareEditInput,
+    ): LibraryShareChangePayload {
+        val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
+        LibraryShare.respondToEdit(input.id, userId, input.accept)
+        if (input.accept) LibraryShare.requestSync(userId)
+        return payload(input.clientMutationId, input.id, userId, 0)
+    }
+
+    data class CancelLibraryShareEditInput(
+        val clientMutationId: String? = null,
+        val id: Int,
+    )
+
+    fun cancelLibraryShareEdit(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: CancelLibraryShareEditInput,
+    ): LibraryShareChangePayload {
+        val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
+        LibraryShare.cancelEdit(input.id, userId)
+        return payload(input.clientMutationId, input.id, userId, 0)
+    }
+
+    data class RemoveLibraryShareInput(
+        val clientMutationId: String? = null,
+        val id: Int,
+    )
+
+    data class RemoveLibrarySharePayload(
+        val clientMutationId: String?,
+        val removedId: Int,
+    )
+
+    fun removeLibraryShare(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: RemoveLibraryShareInput,
+    ): RemoveLibrarySharePayload {
+        val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser).requireUser()
+        LibraryShare.remove(input.id, userId)
+        return RemoveLibrarySharePayload(input.clientMutationId, input.id)
     }
 
     private fun payload(

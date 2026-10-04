@@ -27,6 +27,13 @@ data class LibraryShareType(
     val pairedWith: Int?,
     /** on a synced share the recipient accepted: the state of their two way request, null if they made none */
     val twoWayStatus: LibraryShareStatus?,
+    /** one for one: renaming a shared category on one side renames it on the other side too */
+    val mirror: Boolean,
+    /** a change of synced and one for one that the other account still has to confirm, null if there is none */
+    val proposedSynced: Boolean?,
+    val proposedMirror: Boolean?,
+    /** the pending change was proposed by the current account, so the other one has to confirm it */
+    val proposalIsMine: Boolean,
 ) {
     companion object {
         fun from(
@@ -48,6 +55,10 @@ data class LibraryShareType(
             lastSyncedAt = share.lastSyncedAt,
             pairedWith = share.pairedWith,
             twoWayStatus = share.twoWayStatus?.let { LibraryShareStatus.valueOf(it.name) },
+            mirror = share.mirror,
+            proposedSynced = share.proposedSynced,
+            proposedMirror = share.proposedMirror,
+            proposalIsMine = share.proposedBy == currentUserId,
         )
     }
 }

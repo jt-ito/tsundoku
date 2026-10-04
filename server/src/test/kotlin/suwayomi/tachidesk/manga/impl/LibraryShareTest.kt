@@ -5,8 +5,10 @@ import org.jetbrains.exposed.v1.core.ExperimentalKeywordApi
 import org.jetbrains.exposed.v1.core.dao.id.EntityID
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.insertAndGetId
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -19,9 +21,11 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import suwayomi.tachidesk.manga.model.table.CategoryMangaTable
+import suwayomi.tachidesk.manga.model.table.ChapterTable
 import suwayomi.tachidesk.manga.model.table.CategoryTable
 import suwayomi.tachidesk.manga.model.table.LibraryShareTable
 import suwayomi.tachidesk.manga.model.table.MangaTable
+import suwayomi.tachidesk.manga.model.table.UserChapterTable
 import suwayomi.tachidesk.manga.model.table.UserMangaTable
 import suwayomi.tachidesk.server.user.UserManager
 import suwayomi.tachidesk.server.user.model.UserTable
@@ -293,6 +297,302 @@ class LibraryShareTest : ApplicationTest() {
             waited++
         }
         assertEquals(2, libraryOf(recipient.id))
+    }
+
+    private fun senderRemoves(mangaId: Int) =
+        transaction {
+            UserMangaTable.update({ (UserMangaTable.user eq sender.id) and (UserMangaTable.manga eq mangaId) }) { it[inLibrary] = false }
+        }
+
+    private fun recipientCategoriesOf(mangaId: Int): List<String> =
+        transaction {
+            CategoryMangaTable
+                .innerJoin(CategoryTable)
+                .selectAll()
+                .where { (CategoryTable.user eq recipient.id) and (CategoryMangaTable.manga eq mangaId) }
+                .map { it[CategoryTable.name] }
+        }
+
+    @Test
+    fun `a manga the sender removes is removed for the recipient, and comes back when the sender adds it again`() {
+        val a = createLibraryManga("a")
+        val b = createLibraryManga("b")
+        addToLibrary(a)
+        addToLibrary(b)
+        val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true)
+        LibraryShare.accept(shareId, recipient.id, autoSync = true)
+        assertEquals(2, libraryOf(recipient.id))
+
+        senderRemoves(a)
+        LibraryShare.syncNow(shareId, recipient.id)
+        assertEquals(1, libraryOf(recipient.id))
+
+        transaction {
+            UserMangaTable.update({ (UserMangaTable.user eq sender.id) and (UserMangaTable.manga eq a) }) { it[inLibrary] = true }
+        }
+        LibraryShare.syncNow(shareId, recipient.id)
+        assertEquals(2, libraryOf(recipient.id))
+    }
+
+    @Test
+    fun `moving a manga to another category moves it for the recipient`() {
+        val a = createLibraryManga("a")
+        addToLibrary(a)
+        val (reading, done) =
+            transaction {
+                val reading = CategoryTable.insertAndGetId { it[name] = "Reading"; it[user] = EntityID(sender.id, UserTable) }.value
+                val done = CategoryTable.insertAndGetId { it[name] = "Done"; it[user] = EntityID(sender.id, UserTable) }.value
+                CategoryMangaTable.insert { it[category] = reading; it[manga] = a }
+                reading to done
+            }
+        val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true)
+        LibraryShare.accept(shareId, recipient.id, autoSync = true)
+        assertEquals(listOf("Reading"), recipientCategoriesOf(a))
+
+        transaction {
+            CategoryMangaTable.deleteWhere { (CategoryMangaTable.category eq reading) and (CategoryMangaTable.manga eq a) }
+            CategoryMangaTable.insert { it[category] = done; it[manga] = a }
+        }
+        LibraryShare.syncNow(shareId, recipient.id)
+        assertEquals(listOf("Done"), recipientCategoriesOf(a))
+    }
+
+    @Test
+    fun `a change of the recipient is left alone until the sender changes that manga`() {
+        val a = createLibraryManga("a")
+        addToLibrary(a)
+        val reading =
+            transaction {
+                val id = CategoryTable.insertAndGetId { it[name] = "Reading"; it[user] = EntityID(sender.id, UserTable) }.value
+                CategoryMangaTable.insert { it[category] = id; it[manga] = a }
+                id
+            }
+        val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true)
+        LibraryShare.accept(shareId, recipient.id, autoSync = true)
+
+        // the recipient takes it out of the category, the sender did nothing
+        transaction {
+            val own = CategoryTable.selectAll().where { (CategoryTable.user eq recipient.id) and (CategoryTable.name eq "Reading") }.first()[CategoryTable.id].value
+            CategoryMangaTable.deleteWhere { (CategoryMangaTable.category eq own) and (CategoryMangaTable.manga eq a) }
+        }
+        LibraryShare.syncNow(shareId, recipient.id)
+        assertEquals(false, "Reading" in recipientCategoriesOf(a))
+        assertEquals(true, reading > 0)
+    }
+
+    private fun categoryNames(userId: Int): List<String> =
+        transaction { CategoryTable.selectAll().where { CategoryTable.user eq userId }.map { it[CategoryTable.name] } }
+
+    private fun renameCategory(
+        userId: Int,
+        from: String,
+        to: String,
+    ) = transaction {
+        CategoryTable.update({ (CategoryTable.user eq userId) and (CategoryTable.name eq from) }) { it[name] = to }
+    }
+
+    private fun sharedCategorySetup(mirror: Boolean): Pair<Int, Int> {
+        val a = createLibraryManga("a")
+        addToLibrary(a)
+        transaction {
+            val id = CategoryTable.insertAndGetId { it[name] = "Reading"; it[user] = EntityID(sender.id, UserTable) }.value
+            CategoryMangaTable.insert { it[category] = id; it[manga] = a }
+        }
+        val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true, mirror = mirror)
+        LibraryShare.accept(shareId, recipient.id, autoSync = true)
+        return shareId to a
+    }
+
+    @Test
+    fun `a recipient can rename a shared category and it still follows the same category of the sender`() {
+        val (shareId, _) = sharedCategorySetup(mirror = false)
+        renameCategory(recipient.id, "Reading", "My reading")
+
+        // a new manga in the sender's category lands in the renamed one, no second "Reading" appears
+        val b = createLibraryManga("b")
+        addToLibrary(b)
+        transaction {
+            val reading = CategoryTable.selectAll().where { (CategoryTable.user eq sender.id) and (CategoryTable.name eq "Reading") }.first()[CategoryTable.id].value
+            CategoryMangaTable.insert { it[category] = reading; it[manga] = b }
+        }
+        LibraryShare.syncNow(shareId, recipient.id)
+
+        assertEquals(listOf("My reading"), recipientCategoriesOf(b))
+        assertEquals(false, "Reading" in categoryNames(recipient.id))
+        // without one for one the sender's name is not touched and does not overwrite the recipient's
+        renameCategory(sender.id, "Reading", "Sender's name")
+        LibraryShare.syncNow(shareId, recipient.id)
+        assertEquals(true, "My reading" in categoryNames(recipient.id))
+        assertEquals(true, "Sender's name" in categoryNames(sender.id))
+    }
+
+    @Test
+    fun `one for one keeps the names of shared categories equal in both directions`() {
+        val (shareId, _) = sharedCategorySetup(mirror = true)
+
+        renameCategory(sender.id, "Reading", "Now reading")
+        LibraryShare.syncNow(shareId, recipient.id)
+        assertEquals(true, "Now reading" in categoryNames(recipient.id))
+
+        renameCategory(recipient.id, "Now reading", "Finished soon")
+        LibraryShare.syncNow(shareId, recipient.id)
+        assertEquals(true, "Finished soon" in categoryNames(sender.id))
+        assertEquals(false, "Now reading" in categoryNames(recipient.id))
+    }
+
+    @Test
+    fun `a series the sender migrated carries the recipient's progress along`() {
+        val old = createLibraryManga("old")
+        val new = createLibraryManga("new")
+        addToLibrary(old)
+        val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true)
+        LibraryShare.accept(shareId, recipient.id, autoSync = true)
+
+        fun chaptersOf(mangaId: Int) =
+            transaction {
+                (1..5).map { number ->
+                    ChapterTable
+                        .insertAndGetId {
+                            it[name] = "$number"
+                            it[url] = "$mangaId-$number"
+                            it[sourceOrder] = number
+                            it[manga] = EntityID(mangaId, MangaTable)
+                            it[chapter_number] = number.toFloat()
+                        }.value
+                }
+            }
+        val oldChapters = chaptersOf(old)
+        val newChapters = chaptersOf(new)
+        // the recipient read 1-3 of the old series and bookmarked 2, with a page in progress
+        transaction {
+            oldChapters.take(3).forEachIndexed { index, id ->
+                UserChapterTable.insert {
+                    it[user] = EntityID(recipient.id, UserTable)
+                    it[chapter] = EntityID(id, ChapterTable)
+                    it[isRead] = true
+                    it[isBookmarked] = index == 1
+                    it[lastPageRead] = 7
+                }
+            }
+        }
+
+        // what the WebUI does when the sender migrates: tell the server, add the new series, remove the old one
+        MangaSwap.record(sender.id, old, new)
+        addToLibrary(new)
+        senderRemoves(old)
+        LibraryShare.syncNow(shareId, recipient.id)
+
+        val states =
+            transaction {
+                UserChapterTable
+                    .selectAll()
+                    .where { (UserChapterTable.user eq recipient.id) and (UserChapterTable.chapter inList newChapters) }
+                    .associate { it[UserChapterTable.chapter].value to it }
+            }
+        assertEquals(newChapters.take(3).toSet(), states.filterValues { it[UserChapterTable.isRead] }.keys)
+        assertEquals(setOf(newChapters[1]), states.filterValues { it[UserChapterTable.isBookmarked] }.keys)
+        // like a normal migration, the page in progress does not move
+        assertEquals(setOf(0), states.values.map { it[UserChapterTable.lastPageRead] }.toSet())
+    }
+
+    @Test
+    fun `one for one keeps the order of shared categories equal in both directions`() {
+        val a = createLibraryManga("a")
+        addToLibrary(a)
+        transaction {
+            listOf("Reading", "Planned", "Done").forEach { n ->
+                val id = CategoryTable.insertAndGetId { it[name] = n; it[order] = Int.MAX_VALUE; it[user] = EntityID(sender.id, UserTable) }.value
+                CategoryMangaTable.insert { it[category] = id; it[manga] = a }
+            }
+            Category.normalizeCategories()
+        }
+        fun orderOf(owner: Int) =
+            transaction {
+                CategoryTable.selectAll().where { (CategoryTable.user eq owner) and (CategoryTable.name neq "Default") }
+                    .orderBy(CategoryTable.order to org.jetbrains.exposed.v1.core.SortOrder.ASC).map { it[CategoryTable.name] }
+            }
+        fun setOrder(owner: Int, names: List<String>) =
+            transaction {
+                names.forEachIndexed { i, n -> CategoryTable.update({ (CategoryTable.user eq owner) and (CategoryTable.name eq n) }) { it[order] = 100 + i } }
+                Category.normalizeCategories()
+            }
+        val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true, mirror = true)
+        LibraryShare.accept(shareId, recipient.id, autoSync = true)
+
+        setOrder(sender.id, listOf("Done", "Reading", "Planned"))
+        LibraryShare.syncNow(shareId, recipient.id)
+        assertEquals(listOf("Done", "Reading", "Planned"), orderOf(recipient.id))
+
+        setOrder(recipient.id, listOf("Planned", "Done", "Reading"))
+        LibraryShare.syncNow(shareId, recipient.id)
+        assertEquals(listOf("Planned", "Done", "Reading"), orderOf(sender.id))
+
+        // the Default category is placed too
+        setOrder(sender.id, listOf("Default", "Planned", "Done", "Reading"))
+        LibraryShare.syncNow(shareId, recipient.id)
+        val recipientNames = transaction { CategoryTable.selectAll().where { CategoryTable.user eq recipient.id }.orderBy(CategoryTable.order to org.jetbrains.exposed.v1.core.SortOrder.ASC).map { it[CategoryTable.name] } }
+        assertEquals("Default", recipientNames.first())
+    }
+
+    @Test
+    fun `changing the settings of a share needs the other account to confirm`() {
+        addToLibrary(createLibraryManga("a"))
+        val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList())
+        assertThrows(IllegalArgumentException::class.java) { LibraryShare.proposeEdit(shareId, sender.id, true, false) } // still pending
+        LibraryShare.accept(shareId, recipient.id)
+
+        // the recipient asks for sync + one for one, nothing changes until the sender confirms
+        LibraryShare.proposeEdit(shareId, recipient.id, synced = true, mirror = true)
+        var share = LibraryShare.get(shareId, sender.id)
+        assertEquals(false, share.synced)
+        assertEquals(true, share.proposedSynced)
+        assertThrows(IllegalArgumentException::class.java) { LibraryShare.respondToEdit(shareId, recipient.id, true) } // not their own
+        assertThrows(IllegalArgumentException::class.java) { LibraryShare.proposeEdit(shareId, sender.id, true, false) } // one at a time
+
+        LibraryShare.respondToEdit(shareId, sender.id, accept = true)
+        share = LibraryShare.get(shareId, sender.id)
+        assertEquals(true, share.synced)
+        assertEquals(true, share.mirror)
+        assertEquals(null, share.proposedBy)
+
+        // declined and taken back proposals change nothing
+        LibraryShare.proposeEdit(shareId, sender.id, synced = false, mirror = false)
+        LibraryShare.respondToEdit(shareId, recipient.id, accept = false)
+        assertEquals(true, LibraryShare.get(shareId, sender.id).synced)
+        LibraryShare.proposeEdit(shareId, sender.id, synced = true, mirror = false)
+        LibraryShare.cancelEdit(shareId, sender.id)
+        assertEquals(true, LibraryShare.get(shareId, sender.id).mirror)
+
+        // turning sync off also turns the rest off
+        LibraryShare.setAutoSync(shareId, recipient.id, true)
+        LibraryShare.proposeEdit(shareId, sender.id, synced = false, mirror = false)
+        LibraryShare.respondToEdit(shareId, recipient.id, accept = true)
+        share = LibraryShare.get(shareId, recipient.id)
+        assertEquals(false, share.synced)
+        assertEquals(false, share.mirror)
+        assertEquals(false, share.autoSync)
+    }
+
+    @Test
+    fun `either account can remove a share that was answered, it stops syncing for both`() {
+        val first = createLibraryManga("first")
+        addToLibrary(first)
+        val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true)
+        assertThrows(IllegalArgumentException::class.java) { LibraryShare.remove(shareId, sender.id) } // still waiting for an answer
+        LibraryShare.accept(shareId, recipient.id, autoSync = true)
+
+        val outsider = UserManager.createUser("outsider-${System.nanoTime()}", "password-123")
+        try {
+            assertThrows(IllegalArgumentException::class.java) { LibraryShare.remove(shareId, outsider.id) }
+        } finally {
+            UserManager.deleteUser(outsider.id)
+        }
+
+        LibraryShare.remove(shareId, recipient.id)
+        assertEquals(0, LibraryShare.list(sender.id).size)
+        addToLibrary(createLibraryManga("later"))
+        LibraryShare.syncAll()
+        assertEquals(1, libraryOf(recipient.id)) // what was copied stays, nothing new arrives
     }
 
     @Test

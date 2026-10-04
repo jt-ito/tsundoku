@@ -29,6 +29,27 @@ object LibraryShareTable : IntIdTable("library_share") {
 
     /** set on a two way request: the share of the other direction it answers */
     val pairedWith = integer("paired_with").nullable()
+
+    /** one for one: renaming a shared category on one side renames it on the other side too */
+    val mirror = bool("mirror").default(false)
+
+    /** a change of the settings that the other account still has to confirm, null when there is none */
+    val proposedSynced = bool("proposed_synced").nullable()
+    val proposedMirror = bool("proposed_mirror").nullable()
+    val proposedBy = integer("proposed_by").nullable()
+}
+
+/**
+ * Which category of the recipient follows which category of the sender, by id. A recipient may rename their category
+ * without breaking this, and a one for one share keeps the names equal. [lastName] is the name both sides had when they
+ * were last in step.
+ */
+object LibraryShareCategoryTable : IntIdTable("library_share_category") {
+    val share = reference("share_id", LibraryShareTable, ReferenceOption.CASCADE)
+    val senderCategory = reference("sender_category_id", CategoryTable, ReferenceOption.CASCADE)
+    val recipientCategory = reference("recipient_category_id", CategoryTable, ReferenceOption.CASCADE)
+    val lastName = varchar("last_name", 64).default("")
+    val lastPosition = integer("last_position").nullable()
 }
 
 /** What a share has already delivered, so a manga the recipient removed is not added again by the next sync. */
@@ -36,4 +57,7 @@ object LibraryShareDeliveredTable : IntIdTable("library_share_delivered") {
     val share = reference("share_id", LibraryShareTable, ReferenceOption.CASCADE)
     val kind = varchar("kind", 16) // MANGA or CATEGORY
     val ref = integer("ref_id")
+
+    /** a LINK is a category (ref) and a manga (ref2) */
+    val ref2 = integer("ref2_id").nullable()
 }
