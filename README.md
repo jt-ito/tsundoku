@@ -1,4 +1,4 @@
-# tsundoku
+<h1><img src="docs/images/icon.svg" alt="" width="40" align="top"> tsundoku</h1>
 
 A self-hosted manga reader server that runs [Mihon (Tachiyomi)](https://mihon.app/) extensions, with accounts, a first-run setup flow, a built-in PostgreSQL option and a faster in-app WebView.
 
