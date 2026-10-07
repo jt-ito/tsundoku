@@ -57,7 +57,9 @@ object CategoryManga {
         mangaIds: List<Int>,
         categoryIds: List<Int>,
     ) {
-        val filteredCategoryIds = categoryIds.filter { it != DEFAULT_CATEGORY_ID }
+        // the Default category of an account is never linked: it means "in none of my categories"
+        val defaultRowIds = Category.defaultRowIds()
+        val filteredCategoryIds = categoryIds.filter { it != DEFAULT_CATEGORY_ID && it !in defaultRowIds }
 
         val mangaIdsToCategoryIds = getMangasCategories(mangaIds).mapValues { it.value.map { category -> category.id } }
         val mangaIdsToNewCategoryIds =

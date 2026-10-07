@@ -16,6 +16,7 @@ import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.core.plus
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insertAndGetId
+import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.jdbc.update
@@ -52,10 +53,13 @@ class CategoryMutation {
     )
 
     @RequireAuth
-    fun setCategoryMeta(input: SetCategoryMetaInput): SetCategoryMetaPayload? {
+    fun setCategoryMeta(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: SetCategoryMetaInput,
+    ): SetCategoryMetaPayload? {
         val (clientMutationId, meta) = input
 
-        Category.modifyMeta(meta.categoryId, meta.key, meta.value)
+        Category.modifyMeta(Category.resolveId(meta.categoryId, dataFetchingEnvironment.currentUserId()), meta.key, meta.value)
 
         return SetCategoryMetaPayload(clientMutationId, meta)
     }
@@ -73,8 +77,13 @@ class CategoryMutation {
     )
 
     @RequireAuth
-    fun deleteCategoryMeta(input: DeleteCategoryMetaInput): DeleteCategoryMetaPayload? {
-        val (clientMutationId, categoryId, key) = input
+    fun deleteCategoryMeta(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: DeleteCategoryMetaInput,
+    ): DeleteCategoryMetaPayload? {
+        val (clientMutationId, apiCategoryId, key) = input
+        val categoryId = Category.resolveId(apiCategoryId, dataFetchingEnvironment.currentUserId())
+        val defaultRowIds = Category.defaultRowIds()
 
         val (meta, category) =
             transaction {
@@ -92,7 +101,7 @@ class CategoryMutation {
                     }
 
                 if (meta != null) {
-                    CategoryMetaType(meta)
+                    CategoryMetaType(meta, defaultRowIds)
                 } else {
                     null
                 } to category
@@ -118,14 +127,19 @@ class CategoryMutation {
     )
 
     @RequireAuth
-    fun setCategoryMetas(input: SetCategoryMetasInput): SetCategoryMetasPayload? {
+    fun setCategoryMetas(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: SetCategoryMetasInput,
+    ): SetCategoryMetasPayload? {
         val (clientMutationId, items) = input
+        val userId = dataFetchingEnvironment.currentUserId()
+        val defaultRowIds = Category.defaultRowIds()
 
         val metaByCategoryId =
             items
                 .flatMap { item ->
                     val metaMap = item.metas.associate { it.key to it.value }
-                    item.categoryIds.map { categoryId -> categoryId to metaMap }
+                    item.categoryIds.map { categoryId -> Category.resolveId(categoryId, userId) to metaMap }
                 }.groupBy({ it.first }, { it.second })
                 .mapValues { (_, maps) -> maps.reduce { acc, map -> acc + map } }
 
@@ -140,7 +154,7 @@ class CategoryMutation {
                     CategoryMetaTable
                         .selectAll()
                         .where { (CategoryMetaTable.ref inList allCategoryIds) and (CategoryMetaTable.key inList allMetaKeys) }
-                        .map { CategoryMetaType(it) }
+                        .map { CategoryMetaType(it, defaultRowIds) }
 
                 val categories =
                     CategoryTable
@@ -173,8 +187,14 @@ class CategoryMutation {
     )
 
     @RequireAuth
-    fun deleteCategoryMetas(input: DeleteCategoryMetasInput): DeleteCategoryMetasPayload? {
-        val (clientMutationId, items) = input
+    fun deleteCategoryMetas(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: DeleteCategoryMetasInput,
+    ): DeleteCategoryMetasPayload? {
+        val (clientMutationId, apiItems) = input
+        val userId = dataFetchingEnvironment.currentUserId()
+        val defaultRowIds = Category.defaultRowIds()
+        val items = apiItems.map { item -> item.copy(categoryIds = item.categoryIds.map { Category.resolveId(it, userId) }) }
 
         items.forEach { item ->
             require(!item.keys.isNullOrEmpty() || !item.prefixes.isNullOrEmpty()) {
@@ -210,7 +230,7 @@ class CategoryMutation {
                         CategoryMetaTable
                             .selectAll()
                             .where { condition }
-                            .map { CategoryMetaType(it) }
+                            .map { CategoryMetaType(it, defaultRowIds) }
 
                     CategoryMetaTable.deleteWhere { condition }
                     categoryIds += item.categoryIds
@@ -301,7 +321,8 @@ class CategoryMutation {
         dataFetchingEnvironment: DataFetchingEnvironment,
         input: UpdateCategoryInput,
     ): UpdateCategoryPayload? {
-        val (clientMutationId, id, patch) = input
+        val (clientMutationId, apiId, patch) = input
+        val id = Category.resolveId(apiId, dataFetchingEnvironment.currentUserId())
 
         updateCategories(listOf(id), patch)
         if (patch.name != null) LibraryShare.requestSync(dataFetchingEnvironment.currentUserId())
@@ -318,8 +339,13 @@ class CategoryMutation {
     }
 
     @RequireAuth
-    fun updateCategories(input: UpdateCategoriesInput): UpdateCategoriesPayload? {
-        val (clientMutationId, ids, patch) = input
+    fun updateCategories(
+        dataFetchingEnvironment: DataFetchingEnvironment,
+        input: UpdateCategoriesInput,
+    ): UpdateCategoriesPayload? {
+        val (clientMutationId, apiIds, patch) = input
+        val userId = dataFetchingEnvironment.currentUserId()
+        val ids = apiIds.map { Category.resolveId(it, userId) }
 
         updateCategories(ids, patch)
 
@@ -350,8 +376,9 @@ class CategoryMutation {
         dataFetchingEnvironment: DataFetchingEnvironment,
         input: UpdateCategoryOrderInput,
     ): UpdateCategoryOrderPayload? {
-        val (clientMutationId, categoryId, position) = input
+        val (clientMutationId, apiCategoryId, position) = input
         val userId = dataFetchingEnvironment.currentUserId()
+        val categoryId = Category.resolveId(apiCategoryId, userId)
         require(position > 0) {
             "'order' must not be <= 0"
         }
@@ -462,9 +489,10 @@ class CategoryMutation {
             // the default row stays; its manga move to another category and it gets hidden
             val userId = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser)?.idOrNull ?: 1
             Category.removeDefaultCategory(userId)
+            val defaultRowId = Category.defaultCategoryId(userId)
             return DeleteCategoryPayload(
                 clientMutationId,
-                transaction { CategoryType(CategoryTable.selectAll().where { CategoryTable.id eq categoryId }.first()) },
+                transaction { CategoryType(CategoryTable.selectAll().where { CategoryTable.id eq defaultRowId }.first()) },
                 emptyList(),
             )
         }
@@ -532,13 +560,17 @@ class CategoryMutation {
     private fun updateMangas(
         ids: List<Int>,
         patch: UpdateMangaCategoriesPatch,
+        userId: Int,
     ) {
         transaction {
+            // the links of a manga are shared by all accounts: only the categories of the caller are touched
+            val ownCategoryIds = CategoryTable.select(CategoryTable.id).where { CategoryTable.ownedBy(userId) }.map { it[CategoryTable.id].value }
             if (patch.clearCategories == true) {
-                CategoryMangaTable.deleteWhere { CategoryMangaTable.manga inList ids }
+                CategoryMangaTable.deleteWhere { (CategoryMangaTable.manga inList ids) and (CategoryMangaTable.category inList ownCategoryIds) }
             } else if (!patch.removeFromCategories.isNullOrEmpty()) {
                 CategoryMangaTable.deleteWhere {
-                    (CategoryMangaTable.manga inList ids) and (CategoryMangaTable.category inList patch.removeFromCategories)
+                    (CategoryMangaTable.manga inList ids) and
+                        (CategoryMangaTable.category inList patch.removeFromCategories.filter { it in ownCategoryIds })
                 }
             }
             if (!patch.addToCategories.isNullOrEmpty()) {
@@ -555,7 +587,7 @@ class CategoryMutation {
         val (clientMutationId, id, patch) = input
         val userId = dataFetchingEnvironment.currentUserId()
 
-        updateMangas(listOf(id), patch)
+        updateMangas(listOf(id), patch, userId)
         LibraryShare.requestSync(userId)
 
         val manga =
@@ -577,7 +609,7 @@ class CategoryMutation {
         val (clientMutationId, ids, patch) = input
         val userId = dataFetchingEnvironment.currentUserId()
 
-        updateMangas(ids, patch)
+        updateMangas(ids, patch, userId)
         LibraryShare.requestSync(userId)
 
         val mangas =

@@ -15,6 +15,7 @@ import suwayomi.tachidesk.graphql.server.primitives.Edge
 import suwayomi.tachidesk.graphql.server.primitives.Node
 import suwayomi.tachidesk.graphql.server.primitives.NodeList
 import suwayomi.tachidesk.graphql.server.primitives.PageInfo
+import suwayomi.tachidesk.manga.impl.Category
 import suwayomi.tachidesk.manga.model.dataclass.CategoryDataClass
 import suwayomi.tachidesk.manga.model.dataclass.IncludeOrExclude
 import suwayomi.tachidesk.manga.model.table.CategoryTable
@@ -30,7 +31,7 @@ class CategoryType(
     val isDefaultCategory: Boolean = id == 0,
 ) : Node {
     constructor(row: ResultRow) : this(
-        row[CategoryTable.id].value,
+        Category.apiId(row),
         row[CategoryTable.order],
         row[CategoryTable.name],
         row[CategoryTable.isDefault],

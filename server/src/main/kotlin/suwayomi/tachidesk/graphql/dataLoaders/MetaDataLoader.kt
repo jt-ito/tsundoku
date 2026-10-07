@@ -22,6 +22,7 @@ import suwayomi.tachidesk.manga.model.table.ChapterMetaTable
 import suwayomi.tachidesk.manga.model.table.MangaMetaTable
 import suwayomi.tachidesk.manga.model.table.SourceMetaTable
 import suwayomi.tachidesk.server.JavalinSetup.future
+import suwayomi.tachidesk.manga.impl.Category
 
 class GlobalMetaDataLoader : KotlinDataLoader<String, GlobalMetaType> {
     override val dataLoaderName = "GlobalMetaDataLoader"
@@ -91,14 +92,18 @@ class CategoryMetaDataLoader : KotlinDataLoader<Int, List<CategoryMetaType>> {
 
     override fun getDataLoader(graphQLContext: GraphQLContext): DataLoader<Int, List<CategoryMetaType>> =
         DataLoaderFactory.newDataLoader<Int, List<CategoryMetaType>> { ids ->
+            val userId = graphQLContext.currentUserId()
             future {
                 transaction {
                     addLogger(Slf4jSqlDebugLogger)
+                    // the id 0 is the Default category of the account that asks
+                    val defaultRowIds = Category.defaultRowIds()
+                    val rowIds = ids.map { Category.resolveId(it, userId) }
                     val metasByRefId =
                         CategoryMetaTable
                             .selectAll()
-                            .where { CategoryMetaTable.ref inList ids }
-                            .map { CategoryMetaType(it) }
+                            .where { CategoryMetaTable.ref inList rowIds }
+                            .map { CategoryMetaType(it, defaultRowIds) }
                             .groupBy { it.categoryId }
                     ids.map { metasByRefId[it].orEmpty() }
                 }

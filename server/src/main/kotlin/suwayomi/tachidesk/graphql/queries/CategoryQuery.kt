@@ -160,8 +160,10 @@ class CategoryQuery {
             transaction {
                 val res = CategoryTable.selectAll()
                 res.andWhere { (CategoryTable.user eq userId) or (CategoryTable.user.isNull()) }
-                if (!Category.isDefaultCategoryVisible()) {
-                    res.andWhere { CategoryTable.id neq Category.DEFAULT_CATEGORY_ID }
+                // the Default category of the account is shown as the id 0 (CategoryType)
+                if (!Category.isDefaultCategoryVisible(userId)) {
+                    val defaultRowId = Category.defaultCategoryId(userId)
+                    res.andWhere { CategoryTable.id neq defaultRowId }
                 }
 
                 res.applyOps(condition, filter)

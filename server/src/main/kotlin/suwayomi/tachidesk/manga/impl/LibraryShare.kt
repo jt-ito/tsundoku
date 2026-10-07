@@ -783,8 +783,10 @@ object LibraryShare {
         val recipientLibrary = libraryOf(userId)
         val defaultCategoryIds =
             CategoryTable
-                .select(CategoryTable.id)
+                .selectAll()
                 .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq 0) and (CategoryTable.isDefault eq true) }
+                // the Default category of an account is never linked: it means "in none of my categories"
+                .filterNot { Category.isDefaultRow(it) }
                 .map { it[CategoryTable.id].value }
         val existingLinks =
             CategoryMangaTable

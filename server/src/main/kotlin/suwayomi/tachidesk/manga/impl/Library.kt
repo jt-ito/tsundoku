@@ -40,6 +40,8 @@ object Library {
                             (CategoryTable.isDefault eq true) and
                                 (CategoryTable.id neq Category.DEFAULT_CATEGORY_ID)
                         }.toList()
+                        // the Default category of an account is never linked: it means "in none of my categories"
+                        .filterNot { Category.isDefaultRow(it) }
                 val existingCategories = CategoryMangaTable.selectAll().where { CategoryMangaTable.manga eq mangaId }.toList()
 
                 MangaTable.update({ MangaTable.id eq manga.id }) {

@@ -21,19 +21,24 @@ import suwayomi.tachidesk.graphql.types.CategoryType
 import suwayomi.tachidesk.manga.model.table.CategoryMangaTable
 import suwayomi.tachidesk.manga.model.table.CategoryTable
 import suwayomi.tachidesk.server.JavalinSetup.future
+import suwayomi.tachidesk.graphql.server.currentUserId
+import suwayomi.tachidesk.manga.impl.Category
 
 class CategoryDataLoader : KotlinDataLoader<Int, CategoryType> {
     override val dataLoaderName = "CategoryDataLoader"
 
     override fun getDataLoader(graphQLContext: GraphQLContext): DataLoader<Int, CategoryType> =
         DataLoaderFactory.newDataLoader { ids ->
+            val userId = graphQLContext.currentUserId()
             future {
                 transaction {
                     addLogger(Slf4jSqlDebugLogger)
+                    // the id 0 is the Default category of the account that asks
+                    val rowIds = ids.map { Category.resolveId(it, userId) }
                     val categories =
                         CategoryTable
                             .selectAll()
-                            .where { CategoryTable.id inList ids }
+                            .where { CategoryTable.id inList rowIds }
                             .map { CategoryType(it) }
                             .associateBy { it.id }
                     ids.map { categories[it] }

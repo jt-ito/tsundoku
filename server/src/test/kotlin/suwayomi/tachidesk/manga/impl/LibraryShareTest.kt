@@ -102,7 +102,7 @@ class LibraryShareTest : ApplicationTest() {
     }
 
     @Test
-    fun `uncategorized manga of a shared library land in the recipient's default category`() {
+    fun `uncategorized manga of a shared library stay uncategorized for the recipient`() {
         val a = createLibraryManga("a")
         addToLibrary(a)
         val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList())
@@ -115,7 +115,11 @@ class LibraryShareTest : ApplicationTest() {
                     .where { (CategoryTable.user eq recipient.id) and (CategoryMangaTable.manga eq a) }
                     .count()
             }
-        assertEquals(1, inOwnCategory)
+        // the Default category of an account means "in none of my categories": nothing is linked
+        assertEquals(0, inOwnCategory)
+        val uncategorizedForRecipient =
+            transaction { MangaTable.selectAll().where { Category.uncategorizedOf(recipient.id) }.map { it[MangaTable.id].value } }
+        assertEquals(true, a in uncategorizedForRecipient)
     }
 
     @Test
@@ -226,19 +230,19 @@ class LibraryShareTest : ApplicationTest() {
     }
 
     @Test
-    fun `sharing into another account's category does not make the sender's manga categorized`() {
+    fun `a shared manga without a category is uncategorized for both accounts`() {
         val a = createLibraryManga("a") // the first account's, legacy library
         val shareId = LibraryShare.create(1, recipient.username, LibraryShare.Scope.LIBRARY, emptyList())
         LibraryShare.accept(shareId, recipient.id)
 
         val linked = transaction { CategoryMangaTable.selectAll().where { CategoryMangaTable.manga eq a }.count() }
-        assertEquals(true, linked > 0) // it sits in a category of the recipient
+        assertEquals(0, linked) // the Default category is never linked
         val uncategorizedForFirst =
             transaction { MangaTable.selectAll().where { Category.uncategorizedOf(1) }.map { it[MangaTable.id].value } }
         assertEquals(true, a in uncategorizedForFirst)
         val uncategorizedForRecipient =
             transaction { MangaTable.selectAll().where { Category.uncategorizedOf(recipient.id) }.map { it[MangaTable.id].value } }
-        assertEquals(false, a in uncategorizedForRecipient)
+        assertEquals(true, a in uncategorizedForRecipient)
     }
 
     @Test
@@ -496,14 +500,14 @@ class LibraryShareTest : ApplicationTest() {
     }
 
     @Test
-    fun `a manga moved out of the default into a category leaves the recipient's default category`() {
+    fun `a manga moved out of the default into a category follows for the recipient`() {
         val a = createLibraryManga("a")
         addToLibrary(a)
         val reading = transaction { CategoryTable.insertAndGetId { it[name] = "Reading"; it[user] = EntityID(sender.id, UserTable) }.value }
         val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true, mirror = true)
         LibraryShare.accept(shareId, recipient.id, autoSync = true)
-        // without a category it lands in the recipient's default category
-        assertEquals(listOf("Default"), recipientCategoriesOf(a))
+        // without a category it is uncategorized for the recipient as well
+        assertEquals(emptyList<String>(), recipientCategoriesOf(a))
 
         transaction { CategoryMangaTable.insert { it[category] = reading; it[manga] = a } }
         LibraryShare.syncNow(shareId, recipient.id)
@@ -512,21 +516,21 @@ class LibraryShareTest : ApplicationTest() {
     }
 
     @Test
-    fun `categories the recipient sets themselves next to the default one are left alone by the sync`() {
+    fun `categories the recipient sets themselves are left alone by the sync`() {
         val a = createLibraryManga("a")
         addToLibrary(a)
         val shareId = LibraryShare.create(sender.id, recipient.username, LibraryShare.Scope.LIBRARY, emptyList(), synced = true, mirror = true)
         LibraryShare.accept(shareId, recipient.id, autoSync = true)
-        assertEquals(listOf("Default"), recipientCategoriesOf(a))
+        assertEquals(emptyList<String>(), recipientCategoriesOf(a))
 
-        // the recipient puts it into a category of their own as well, the sender did not change anything
+        // the recipient puts it into a category of their own, the sender did not change anything
         transaction {
             val mine = CategoryTable.insertAndGetId { it[name] = "Mine"; it[user] = EntityID(recipient.id, UserTable) }.value
             CategoryMangaTable.insert { it[category] = mine; it[manga] = a }
         }
         LibraryShare.syncNow(shareId, recipient.id)
 
-        assertEquals(listOf("Default", "Mine"), recipientCategoriesOf(a).sorted())
+        assertEquals(listOf("Mine"), recipientCategoriesOf(a))
     }
 
     @Test

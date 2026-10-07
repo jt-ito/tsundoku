@@ -8,19 +8,23 @@ package suwayomi.tachidesk.manga.impl
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import org.jetbrains.exposed.v1.core.Op
+import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.dao.id.EntityID
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.inSubQuery
+import org.jetbrains.exposed.v1.core.lowerCase
 import org.jetbrains.exposed.v1.core.isNull
 import org.jetbrains.exposed.v1.core.notInSubQuery
+import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.core.neq
 import org.jetbrains.exposed.v1.core.statements.BatchUpdateStatement
 import org.jetbrains.exposed.v1.jdbc.andWhere
 import org.jetbrains.exposed.v1.jdbc.batchInsert
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.insertAndGetId
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.statements.toExecutable
@@ -36,6 +40,7 @@ import suwayomi.tachidesk.manga.model.table.UserMangaTable
 import suwayomi.tachidesk.manga.model.table.libraryOf
 import suwayomi.tachidesk.manga.model.table.ownedBy
 import suwayomi.tachidesk.manga.model.table.toDataClass
+import suwayomi.tachidesk.server.user.model.UserTable
 
 object Category {
     /**
@@ -133,12 +138,12 @@ object Category {
     ) {
         require(position > 0) { "'position' must be > 0" }
         transaction {
-            val showDefault = isDefaultCategoryVisible()
+            val showDefault = isDefaultCategoryVisible(userId)
             val categories =
                 CategoryTable
                     .selectAll()
                     .where {
-                        CategoryTable.ownedBy(userId) and (if (showDefault) Op.TRUE else CategoryTable.id neq DEFAULT_CATEGORY_ID)
+                        CategoryTable.ownedBy(userId) and (if (showDefault) Op.TRUE else CategoryTable.id neq defaultCategoryId(userId))
                     }.orderBy(CategoryTable.order to SortOrder.ASC, CategoryTable.id to SortOrder.ASC)
                     .toMutableList()
             val from = categories.indexOfFirst { it[CategoryTable.id].value == categoryId }
@@ -187,14 +192,64 @@ object Category {
         }
     }
 
-    private fun needsDefaultCategory() =
+    private fun needsDefaultCategory(userId: Int = 1) =
         transaction {
             MangaTable
                 .selectAll()
-                .where { (MangaTable.inLibrary eq true) and uncategorizedOf(1) }
+                .where { (if (userId == 1) MangaTable.inLibrary eq true else UserMangaTable.libraryOf(userId)) and uncategorizedOf(userId) }
                 .empty()
                 .not()
         }
+
+    /**
+     * The "Default" category of an account means "in none of my categories". For the first account it is the built-in
+     * row with the id 0, every other account has a row of its own that holds the order and the hidden flag. The API shows
+     * all of them as id 0 ([apiId]) and the manga of it are always worked out ([uncategorizedOf]), never linked.
+     */
+    fun defaultCategoryId(userId: Int): Int =
+        if (userId == 1) {
+            DEFAULT_CATEGORY_ID
+        } else {
+            transaction {
+                CategoryTable
+                    .selectAll()
+                    .where { CategoryTable.ownedBy(userId) }
+                    .firstOrNull { it[CategoryTable.name].equals(DEFAULT_CATEGORY_NAME, ignoreCase = true) }
+                    ?.get(CategoryTable.id)
+                    ?.value
+                    ?: CategoryTable
+                        .insertAndGetId {
+                            it[CategoryTable.name] = DEFAULT_CATEGORY_NAME
+                            it[CategoryTable.isDefault] = true
+                            it[CategoryTable.order] = Int.MAX_VALUE
+                            it[CategoryTable.user] = EntityID(userId, UserTable)
+                        }.value
+                    .also { normalizeCategories() }
+            }
+        }
+
+    /** The rows that are the Default category of an account (all of them are shown as the id 0). */
+    fun defaultRowIds(): Set<Int> =
+        transaction {
+            CategoryTable
+                .select(CategoryTable.id, CategoryTable.name)
+                .where { (CategoryTable.id eq DEFAULT_CATEGORY_ID) or (CategoryTable.name.lowerCase() eq DEFAULT_CATEGORY_NAME.lowercase()) }
+                .map { it[CategoryTable.id].value }
+                .toSet()
+        }
+
+    /** The row is the Default category of its account. */
+    fun isDefaultRow(row: ResultRow): Boolean =
+        row[CategoryTable.id].value == DEFAULT_CATEGORY_ID || row[CategoryTable.name].equals(DEFAULT_CATEGORY_NAME, ignoreCase = true)
+
+    /** The id the API shows: the Default category of every account is the id 0. */
+    fun apiId(row: ResultRow): Int = if (isDefaultRow(row)) DEFAULT_CATEGORY_ID else row[CategoryTable.id].value
+
+    /** The id of the row behind an id the API was given. */
+    fun resolveId(
+        apiCategoryId: Int,
+        userId: Int,
+    ): Int = if (apiCategoryId == DEFAULT_CATEGORY_ID) defaultCategoryId(userId) else apiCategoryId
 
     const val DEFAULT_CATEGORY_ID = 0
 
@@ -217,19 +272,20 @@ object Category {
      * The default category can be "deleted" by the user: its manga move into another category and it stays hidden,
      * unless manga without a category exist again or there is no other category left.
      */
-    fun isDefaultCategoryVisible(): Boolean =
+    fun isDefaultCategoryVisible(userId: Int = 1): Boolean =
         transaction {
+            val defaultId = defaultCategoryId(userId)
             val hidden =
                 CategoryMetaTable
                     .selectAll()
-                    .where { (CategoryMetaTable.ref eq DEFAULT_CATEGORY_ID) and (CategoryMetaTable.key eq DEFAULT_HIDDEN_META_KEY) }
+                    .where { (CategoryMetaTable.ref eq defaultId) and (CategoryMetaTable.key eq DEFAULT_HIDDEN_META_KEY) }
                     .empty()
                     .not()
             !hidden ||
-                needsDefaultCategory() ||
+                needsDefaultCategory(userId) ||
                 CategoryTable
                     .selectAll()
-                    .where { CategoryTable.id neq DEFAULT_CATEGORY_ID }
+                    .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq defaultId) }
                     .empty()
         }
 
@@ -239,7 +295,7 @@ object Category {
             val target =
                 CategoryTable
                     .selectAll()
-                    .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq DEFAULT_CATEGORY_ID) }
+                    .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq defaultCategoryId(userId)) }
                     .orderBy(CategoryTable.order to SortOrder.ASC, CategoryTable.id to SortOrder.ASC)
                     .firstOrNull()
                     ?.get(CategoryTable.id)
@@ -256,7 +312,7 @@ object Category {
                 this[CategoryMangaTable.manga] = it
             }
 
-            modifyMeta(DEFAULT_CATEGORY_ID, DEFAULT_HIDDEN_META_KEY, "true")
+            modifyMeta(defaultCategoryId(userId), DEFAULT_HIDDEN_META_KEY, "true")
             mangaIds
         }
 

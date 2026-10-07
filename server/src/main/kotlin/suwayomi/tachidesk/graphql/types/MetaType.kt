@@ -66,6 +66,12 @@ class CategoryMetaType(
         categoryId = row[CategoryMetaTable.ref].value,
     )
 
+    constructor(row: ResultRow, defaultRowIds: Set<Int>) : this(
+        key = row[CategoryMetaTable.key],
+        value = row[CategoryMetaTable.value],
+        categoryId = row[CategoryMetaTable.ref].value.let { if (it in defaultRowIds) 0 else it },
+    )
+
     fun category(dataFetchingEnvironment: DataFetchingEnvironment): CompletableFuture<CategoryType> =
         dataFetchingEnvironment.getValueFromDataLoader<Int, CategoryType>("CategoryDataLoader", categoryId)
 }
