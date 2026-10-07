@@ -11,7 +11,8 @@ import de.neonew.exposed.migrations.helpers.SQLMigration
 
 /**
  * The Default category of every account now means "in none of my categories", like the built-in one of the first
- * account always did. The Default rows of the other accounts stay (they hold the order and the hidden flag) but no longer
+ * account always did. Only rows of other accounts are touched (never a category the first account made itself).
+ * The Default rows of the other accounts stay (they hold the order and the hidden flag) but no longer
  * hold manga: their links are removed, those manga are simply uncategorized and show up in the Default category.
  */
 @Suppress("ClassName", "unused")
@@ -19,6 +20,6 @@ class M0077_VirtualDefaultCategory : SQLMigration() {
     override val sql =
         """
         DELETE FROM categorymanga
-        WHERE category IN (SELECT id FROM category WHERE LOWER(name) = 'default' AND id <> 0);
+        WHERE category IN (SELECT id FROM category WHERE LOWER(name) = 'default' AND id <> 0 AND user_id <> 1);
         """.trimIndent()
 }
