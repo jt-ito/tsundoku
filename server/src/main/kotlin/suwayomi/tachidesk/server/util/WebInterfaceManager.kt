@@ -849,6 +849,11 @@ object WebInterfaceManager {
         raiseError: Boolean = false,
     ): Pair<String, Boolean> =
         try {
+            // the custom WebUI is installed by hand (never recorded as the served flavor), so it never has an update
+            if (flavor == WebUIFlavor.CUSTOM) {
+                return Pair(currentVersion, false)
+            }
+
             val isServedWebUIForCurrentFlavor = flavor.uiName == getServedWebUIFlavor().uiName
             val latestCompatibleVersion = getLatestCompatibleVersion(flavor)
             val isVersionUpdateAvailable = latestCompatibleVersion != currentVersion

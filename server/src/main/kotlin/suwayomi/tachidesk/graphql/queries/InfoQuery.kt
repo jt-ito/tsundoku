@@ -13,6 +13,7 @@ import suwayomi.tachidesk.server.generated.BuildConfig
 import suwayomi.tachidesk.server.serverConfig
 import suwayomi.tachidesk.server.util.Platform
 import suwayomi.tachidesk.server.util.WebInterfaceManager
+import java.io.File
 import java.util.concurrent.CompletableFuture
 
 class InfoQuery {
@@ -26,6 +27,8 @@ class InfoQuery {
         val github: String,
         val discord: String,
         val platformInfo: PlatformInfo,
+        /** Running in a container: updates mean pulling a new image, not downloading a jar */
+        val isDocker: Boolean,
     )
 
     fun aboutServer(): AboutServerPayload =
@@ -38,7 +41,10 @@ class InfoQuery {
             BuildConfig.GITHUB,
             BuildConfig.DISCORD,
             PlatformInfo(Platform.current),
+            isDocker,
         )
+
+    private val isDocker by lazy { File("/.dockerenv").exists() || File("/run/.containerenv").exists() }
 
     data class CheckForServerUpdatesPayload(
         /** [channel] mirrors [suwayomi.tachidesk.server.BuildConfig.BUILD_TYPE] */
