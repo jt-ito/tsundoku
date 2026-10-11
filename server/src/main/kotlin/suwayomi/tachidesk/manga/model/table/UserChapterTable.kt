@@ -12,6 +12,7 @@ object UserChapterTable : IntIdTable("user_chapter") {
     val isBookmarked = bool("bookmark").default(false)
     val lastPageRead = integer("last_page_read").default(0)
     val lastReadAt = long("last_read_at").default(0)
+    val lastPageOffset = double("last_page_offset").default(0.0)
 
     init {
         uniqueIndex("uq_user_chapter", user, chapter)

@@ -38,6 +38,8 @@ class ChapterType(
     val isRead: Boolean,
     val isBookmarked: Boolean,
     val lastPageRead: Int,
+    /** how far into the last read page (0 to 1 of its height) */
+    val lastPageOffset: Double,
     val lastReadAt: Long,
     val sourceOrder: Int,
     val realUrl: String?,
@@ -86,6 +88,10 @@ class ChapterType(
                 ?: if (userId == 1) row[ChapterTable.lastPageRead] else 0
         }
 
+        fun resolveLastPageOffset(row: ResultRow, userId: Int): Double =
+            resolveUserChapter(row[ChapterTable.id].value, userId)
+                ?.get(suwayomi.tachidesk.manga.model.table.UserChapterTable.lastPageOffset) ?: 0.0
+
         fun resolveLastReadAt(row: ResultRow, userId: Int): Long {
             val userRow = resolveUserChapter(row[ChapterTable.id].value, userId)
             return userRow?.get(suwayomi.tachidesk.manga.model.table.UserChapterTable.lastReadAt)
@@ -104,6 +110,7 @@ class ChapterType(
         if (userId != null) resolveIsRead(row, userId) else row[ChapterTable.isRead],
         if (userId != null) resolveIsBookmarked(row, userId) else row[ChapterTable.isBookmarked],
         if (userId != null) resolveLastPageRead(row, userId) else row[ChapterTable.lastPageRead],
+        if (userId != null) resolveLastPageOffset(row, userId) else 0.0,
         if (userId != null) resolveLastReadAt(row, userId) else row[ChapterTable.lastReadAt],
         row[ChapterTable.sourceOrder],
         row[ChapterTable.realUrl],
@@ -123,6 +130,7 @@ class ChapterType(
         dataClass.read,
         dataClass.bookmarked,
         dataClass.lastPageRead,
+        0.0,
         dataClass.lastReadAt,
         dataClass.index,
         dataClass.realUrl,

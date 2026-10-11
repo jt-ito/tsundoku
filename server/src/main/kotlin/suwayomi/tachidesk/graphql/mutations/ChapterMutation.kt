@@ -53,6 +53,8 @@ class ChapterMutation {
         val isBookmarked: Boolean? = null,
         val isRead: Boolean? = null,
         val lastPageRead: Int? = null,
+        /** how far into the page (0 to 1 of its height), for resuming exactly where the reading stopped */
+        val lastPageOffset: Double? = null,
     )
 
     data class UpdateChapterPayload(
@@ -99,8 +101,9 @@ class ChapterMutation {
                 } else {
                     emptyMap()
                 }
-            if (patch.isRead != null || patch.isBookmarked != null || patch.lastPageRead != null) {
+            if (patch.isRead != null || patch.isBookmarked != null || patch.lastPageRead != null || patch.lastPageOffset != null) {
                 val now = Instant.now().epochSecond
+                val targetOffset = patch.lastPageOffset?.coerceIn(0.0, 1.0)
 
                 // 1. Update user_chapter table for calling user
                 ids.forEach { chapterId ->
@@ -129,6 +132,8 @@ class ChapterMutation {
                                 it[lastPageRead] = p
                                 it[lastReadAt] = now
                             }
+                            // a new page without an offset starts at its top
+                            if (targetPage != null || targetOffset != null) it[lastPageOffset] = targetOffset ?: 0.0
                         }
                     } else {
                         suwayomi.tachidesk.manga.model.table.UserChapterTable.insert {
@@ -137,6 +142,7 @@ class ChapterMutation {
                             it[isRead] = patch.isRead ?: false
                             it[isBookmarked] = patch.isBookmarked ?: false
                             it[lastPageRead] = targetPage ?: 0
+                            it[lastPageOffset] = targetOffset ?: 0.0
                             it[lastReadAt] = if (targetPage != null) now else 0
                         }
                     }
