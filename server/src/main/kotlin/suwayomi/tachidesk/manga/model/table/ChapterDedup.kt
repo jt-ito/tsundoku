@@ -14,7 +14,8 @@ package suwayomi.tachidesk.manga.model.table
  * their real-world identity — [chapterNumber] when it's known ([ChapterTable.chapter_number]
  * defaults to -1f when a source doesn't provide one), otherwise the trimmed, lowercased
  * [name] — so each logical chapter is only counted once regardless of how many scanlator
- * copies exist for it.
+ * copies exist for it. Chapter 0 (a prologue or the like) is not counted at all, as long as the
+ * manga has numbered chapters: then 0 is a real number, not a source's "unknown".
  */
 object ChapterDedup {
     private fun identityOf(
@@ -25,7 +26,14 @@ object ChapterDedup {
     private fun <T> List<T>.groupByChapterIdentity(
         chapterNumber: (T) -> Float,
         name: (T) -> String,
-    ): Collection<List<T>> = groupBy { identityOf(chapterNumber(it), name(it)) }.values
+    ): Collection<List<T>> {
+        // when nothing has a number above 0, a 0 is more likely a source's "unknown" than a chapter
+        val skipZero = any { chapterNumber(it) > 0f }
+
+        return filter { !skipZero || chapterNumber(it) != 0f }
+            .groupBy { identityOf(chapterNumber(it), name(it)) }
+            .values
+    }
 
     /** Total number of distinct logical chapters, regardless of read/download/bookmark state. */
     fun <T> List<T>.distinctChapterCount(
