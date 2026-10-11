@@ -23,6 +23,7 @@ import okhttp3.Cache
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import suwayomi.tachidesk.manga.impl.util.source.GetSource
+import suwayomi.tachidesk.server.generated.BuildConfig
 import java.net.CookieHandler
 import java.net.CookieManager
 import java.net.CookiePolicy
@@ -48,11 +49,7 @@ class NetworkHelper(
     }
     // Tachidesk <--
 
-    private val userAgent =
-        MutableStateFlow(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        )
+    private val userAgent = MutableStateFlow(defaultUserAgent())
     val userAgentFlow = userAgent.asStateFlow()
 
     fun defaultUserAgentProvider(): String = userAgent.value
@@ -127,4 +124,25 @@ class NetworkHelper(
     @Deprecated("The regular client handles Cloudflare by default")
     @Suppress("UNUSED")
     val cloudflareClient by lazy { client }
+}
+
+/**
+ * The user agent of the embedded browser (the WebView), as Chrome reports it: the reduced form with the real major
+ * version and the real platform. The WebView sends this one and Cloudflare checks it against what the page's script
+ * and the client hints say, so it has to be what the browser really is, not a made up recent Chrome on Windows.
+ */
+private fun defaultUserAgent(): String {
+    val chromeMajor =
+        Regex("chromium-(\\d+)")
+            .find(BuildConfig.JCEF_VERSION)
+            ?.groupValues
+            ?.get(1) ?: "120"
+    val os = System.getProperty("os.name").orEmpty().lowercase()
+    val platform =
+        when {
+            "win" in os -> "Windows NT 10.0; Win64; x64"
+            "mac" in os -> "Macintosh; Intel Mac OS X 10_15_7"
+            else -> "X11; Linux x86_64"
+        }
+    return "Mozilla/5.0 ($platform) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$chromeMajor.0.0.0 Safari/537.36"
 }

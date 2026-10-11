@@ -4,6 +4,7 @@ import eu.kanade.tachiyomi.network.NetworkHelper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
@@ -20,6 +21,10 @@ import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
 import org.cef.browser.CefRendering
 import org.cef.handler.CefDisplayHandlerAdapter
+import org.cef.callback.CefJSDialogCallback
+import org.cef.handler.CefJSDialogHandler
+import org.cef.handler.CefJSDialogHandlerAdapter
+import org.cef.handler.CefLifeSpanHandlerAdapter
 import org.cef.handler.CefLoadHandler
 import org.cef.handler.CefScreenInfo
 import org.cef.handler.CefLoadHandlerAdapter
@@ -103,6 +108,9 @@ class KcefWebView {
 
         // pause after the last paint, before resending the last frame in full quality
         private const val SETTLE_DELAY_MS = 150L
+
+        // pause after the last paint, before a sharp picture replaces the video (see "scheduleStill")
+        private const val STILL_DELAY_MS = 300L
 
         // frames sent, but not yet displayed by the client, before waiting for the client (prevents frames from
         // piling up in the websocket queue when the client is slower than the server)
@@ -278,14 +286,75 @@ class KcefWebView {
         }
     }
 
+    /**
+     * The WebView has no tabs or windows, so a page cannot open a new one. Popups are mostly ads: a link to the same site
+     * (e.g. "target=_blank") is opened in the page itself, everything else is dropped.
+     */
+    private inner class LifeSpanHandler : CefLifeSpanHandlerAdapter() {
+        override fun onBeforePopup(
+            browser: CefBrowser,
+            frame: CefFrame,
+            targetUrl: String,
+            targetFrameName: String,
+        ): Boolean {
+            val currentHost = hostOf(browser.url)
+            val isSameSite = currentHost != null && hostOf(targetUrl) == currentHost
+            if (isSameSite && !AdBlocker.shouldBlock(targetUrl)) {
+                browser.loadURL(targetUrl)
+            } else {
+                logger.debug { "Blocked popup: $targetUrl" }
+            }
+            return true
+        }
+
+        private fun hostOf(url: String?): String? =
+            try {
+                java.net.URI(url ?: return null).host?.lowercase()?.removePrefix("www.")
+            } catch (_: Exception) {
+                null
+            }
+    }
+
+    /**
+     * Nobody is there to answer a JavaScript alert/confirm/prompt of the page, and ad pages use them for fake warnings.
+     * They are suppressed (the page is told the dialog was dismissed) and "leave this page?" questions are accepted.
+     */
+    private inner class JsDialogHandler : CefJSDialogHandlerAdapter() {
+        override fun onJSDialog(
+            browser: CefBrowser,
+            originUrl: String,
+            dialogType: CefJSDialogHandler.JSDialogType,
+            messageText: String,
+            defaultPromptText: String,
+            callback: CefJSDialogCallback,
+            suppressMessage: BoolRef,
+        ): Boolean {
+            logger.debug { "Suppressed a $dialogType of $originUrl: $messageText" }
+            suppressMessage.set(true)
+            return false
+        }
+
+        override fun onBeforeUnloadDialog(
+            browser: CefBrowser,
+            messageText: String,
+            isReload: Boolean,
+            callback: CefJSDialogCallback,
+        ): Boolean {
+            callback.Continue(true, "")
+            return true
+        }
+    }
+
     private inner class ResourceRequestHandler : CefResourceRequestHandlerAdapter() {
         override fun onBeforeResourceLoad(
             browser: CefBrowser?,
             frame: CefFrame?,
             request: CefRequest,
         ): Boolean {
-            // never block the page itself, only what it loads
-            if (request.resourceType != CefRequest.ResourceType.RT_MAIN_FRAME && AdBlocker.shouldBlock(request.url)) {
+            // the page itself is only blocked when it is sent to a popup ad network (an ad script redirecting the page)
+            val isMainFrame = request.resourceType == CefRequest.ResourceType.RT_MAIN_FRAME
+            if (AdBlocker.shouldBlock(request.url, isMainFrame)) {
+                if (isMainFrame) logger.info { "Blocked a redirect to an ad network: ${request.url}" }
                 logger.trace { "Blocked ad/tracker: ${request.url}" }
                 return true
             }
@@ -389,10 +458,44 @@ class KcefWebView {
                 // this thread, since blocking CEF's paint thread is what lowers the page's frame rate.
                 synchronized(lock) { videoDirty = true }
                 scheduleVideoPush()
+                scheduleStill()
                 return
             }
 
             scheduleEncode()
+        }
+
+        private var stillJob: Job? = null
+        private val isStillShown = AtomicBoolean(false)
+
+        /**
+         * The video encoder smears fine text (it is made for camera video). Once the page stops changing, one sharp picture
+         * is sent, which the client shows over the video until the page changes again.
+         */
+        private fun scheduleStill() {
+            stillJob?.cancel()
+            if (isStillShown.compareAndSet(true, false)) {
+                WebView.notifyAllClients("""{"type":"stillEnd"}""")
+            }
+
+            stillJob =
+                encodeScope.launch {
+                    delay(STILL_DELAY_MS)
+                    val frame =
+                        synchronized(lock) {
+                            val latest = latestImage ?: return@synchronized null
+                            BufferedImage(latest.width, latest.height, BufferedImage.TYPE_INT_RGB).also { copy ->
+                                val src = (latest.raster.dataBuffer as DataBufferInt).data
+                                System.arraycopy(src, 0, (copy.raster.dataBuffer as DataBufferInt).data, 0, src.size)
+                            }
+                        } ?: return@launch
+                    if (streamer?.isConnected != true) return@launch
+
+                    val jpeg = encodeJpeg(frame, JPEG_QUALITY_SETTLED)
+                    isStillShown.set(true)
+                    framesInFlight.incrementAndGet()
+                    WebView.notifyAllClientsBinary(jpeg)
+                }
         }
 
         /** Sends the last painted frame again, e.g. right after the video connected, or to keep a still page alive. */
@@ -594,6 +697,8 @@ class KcefWebView {
                     addDisplayHandler(DisplayHandler())
                     addLoadHandler(LoadHandler())
                     addRequestHandler(RequestHandler())
+                    addLifeSpanHandler(LifeSpanHandler())
+                    addJSDialogHandler(JsDialogHandler())
                 }
             }
 
@@ -692,8 +797,20 @@ class KcefWebView {
                     createImmediately()
                     setWindowlessFrameRate(FRAME_RATE_IDLE)
                 }
+        logBrowserVersion()
         isBoosted.set(false)
         boostFrameRate()
+    }
+
+    // challenge pages compare the user agent that is sent with what the browser really is: log both to be able to check
+    private fun logBrowserVersion() {
+        try {
+            browser?.devToolsClient?.executeDevToolsMethod("Browser.getVersion")?.thenAccept { version ->
+                logger.info { "WebView browser: $version, user agent sent: ${System.getProperty("http.agent")}" }
+            }
+        } catch (e: Exception) {
+            logger.debug(e) { "Could not read the browser version" }
+        }
     }
 
     // the idle rate makes scrolling look choppy, so input raises it to 60fps until the user has been idle for a moment

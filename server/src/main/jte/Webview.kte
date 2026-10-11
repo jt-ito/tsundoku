@@ -644,6 +644,12 @@
         const origTitle = document.title;
         const params = new URLSearchParams(window.location.search);
         const token = params.get('token');
+        if (token) {
+            // the token only has to get to the socket, do not leave it in the address bar and the history
+            params.delete('token');
+            const rest = params.toString();
+            window.history.replaceState(null, '', window.location.pathname + (rest ? '?' + rest : '') + window.location.hash);
+        }
         let currentRenderId = 0;
         // whether a smooth scroll step was sent, that no frame was displayed for yet (see "smoothScrollTick")
         let awaitingScrollFrame = false;
@@ -871,6 +877,7 @@
                             if (frame.height !== bmp.height) frame.height = bmp.height;
                             ctx.drawImage(bmp, 0, 0);
                             bmp.close();
+                            revealStill();
                         }).catch(() => {}).finally(ackFrame);
                     } else {
                         const img = new Image();
@@ -881,6 +888,7 @@
                                 if (frame.width !== img.width) frame.width = img.width;
                                 if (frame.height !== img.height) frame.height = img.height;
                                 ctx.drawImage(img, 0, 0);
+                                revealStill();
                             }
                             ackFrame();
                         };
@@ -900,6 +908,9 @@
 
                     const obj = JSON.parse(e.data);
                     switch (obj.type) {
+                        case "stillEnd":
+                            hideStill();
+                            break;
                         case "rtcAnswer":
                             if (peer) {
                                 peer.setRemoteDescription({ type: 'answer', sdp: obj.sdp }).catch(() => stopRtc(true));
@@ -956,12 +967,14 @@
                         console.log("WebSocket connection closed cleanly, code=" + e.code + ", reason=" + e.reason);
                     } else {
                         console.error('WebSocket connection died', e);
+                        messageDiv.textContent = "${MR.strings.label_error.localized(locale)}: " + (e.reason || 'connection closed (code ' + e.code + ')');
+                        messageDiv.classList.add('error');
                     }
                     document.body.classList.add('disconnected');
                 });
 
                 socket.addEventListener('error', e => {
-                    messageDiv.textContent = "${MR.strings.label_error.localized(locale)}: " + (e.message || e.reason || e);
+                    messageDiv.textContent = "${MR.strings.label_error.localized(locale)}: " + (e.message || e.reason || 'connection to the server failed');
                     messageDiv.classList.add('error');
                     console.error('WebSocket error:', e);
                 });
@@ -990,7 +1003,30 @@
                     }
                 };
 
+                // While the video is shown, a sharp picture of the page replaces it once the page stops changing (the video
+                // encoder smears fine text). "videoOn": the video is the current view, "stillOn": the sharp picture covers it.
+                let videoOn = false;
+                let stillOn = false;
+
+                const revealStill = () => {
+                    if (!videoOn) return;
+                    stillOn = true;
+                    rtcVideo.style.opacity = '0';
+                    frame.style.visibility = 'visible';
+                };
+
+                const hideStill = () => {
+                    if (!stillOn) return;
+                    stillOn = false;
+                    if (videoOn) {
+                        rtcVideo.style.opacity = '1';
+                        frame.style.visibility = 'hidden';
+                    }
+                };
+
                 const showVideo = (show) => {
+                    videoOn = show;
+                    stillOn = false;
                     rtcVideo.style.opacity = show ? '1' : '0';
                     frame.style.visibility = show ? 'hidden' : 'visible';
                     if (show && !videoFrameWatcherActive && rtcVideo.requestVideoFrameCallback) {
@@ -1390,16 +1426,53 @@
                         }
                     };
 
-                    // a swipe is much shorter than the wheel distance it should cover, so it is amplified, and
-                    // lifting the finger while moving continues the scroll for a moment (like a native swipe)
+                    // a swipe is much shorter than the wheel distance it should cover, so it is amplified. Lifting the finger
+                    // while moving keeps the page gliding and slowing down gradually (inertia), like a native swipe.
                     const TOUCH_SCROLL_GAIN = 2.5;
-                    const FLING_MIN_SPEED = 0.4; // px/ms, before the gain
-                    const FLING_DURATION_MS = 350;
-                    let velocity = { x: 0, y: 0, at: 0 };
+                    const FLING_MIN_SPEED = 0.25; // px/ms of finger movement, before the gain
+                    const FLING_FRICTION_MS = 200; // the speed drops to 1/e of itself in this time
+                    const FLING_STOP_SPEED = 0.04; // px/ms of page movement
+                    const VELOCITY_WINDOW_MS = 100;
+                    let samples = [];
+                    let fling = null;
+
+                    const stopFling = () => {
+                        if (!fling) return;
+                        cancelAnimationFrame(fling.raf);
+                        fling = null;
+                    };
+
+                    const flingTick = (now) => {
+                        const state = fling;
+                        if (!state) return;
+                        const dt = Math.min(now - state.last, 50);
+                        state.last = now;
+                        state.speed *= Math.exp(-dt / FLING_FRICTION_MS);
+                        state.pending += state.speed * dt;
+
+                        // like the wheel steps, only send the next one once the previous one was displayed, but keep the distance
+                        const isWaitingForFrame = awaitingScrollFrame && Date.now() - lastScrollStepAt < SMOOTH_SCROLL_MAX_FRAME_WAIT_MS;
+                        if (!isWaitingForFrame && socket.readyState === WebSocket.OPEN) {
+                            const amount = Math.round(state.pending);
+                            if (amount) {
+                                sendWheel(amount, state.x, state.y, state.horizontal);
+                                state.pending -= amount;
+                                awaitingScrollFrame = true;
+                                lastScrollStepAt = Date.now();
+                            }
+                        }
+
+                        if (Math.abs(state.speed) < FLING_STOP_SPEED && Math.abs(state.pending) < 1) {
+                            fling = null;
+                            return;
+                        }
+                        state.raf = requestAnimationFrame(flingTick);
+                    };
 
                     frameInput.addEventListener('touchstart', e => {
                         stopSmoothScroll();
-                        velocity = { x: 0, y: 0, at: 0 };
+                        stopFling();
+                        samples = [];
                         if (e.touches.length === 1) {
                             touch = e.touches[0];
                         }
@@ -1408,22 +1481,39 @@
                         if (pendingTouchMove) sendPendingTouchMove();
                         const last = touch;
                         touch = undefined;
-                        if (!last || Date.now() - velocity.at > 80) return;
-                        const horizontal = Math.abs(velocity.x) > Math.abs(velocity.y);
-                        const speed = horizontal ? velocity.x : velocity.y;
+                        const now = performance.now();
+                        const lastSample = samples[samples.length - 1];
+                        const firstSample = samples[0];
+                        samples = [];
+                        // a finger that rested before lifting does not fling
+                        if (!last || !lastSample || !firstSample || now - lastSample.t > 60) return;
+                        const duration = lastSample.t - firstSample.t;
+                        if (duration < 16) return;
+                        const vx = (firstSample.x - lastSample.x) / duration;
+                        const vy = (firstSample.y - lastSample.y) / duration;
+                        const horizontal = Math.abs(vx) > Math.abs(vy);
+                        const speed = horizontal ? vx : vy;
                         if (Math.abs(speed) < FLING_MIN_SPEED) return;
                         const rect = frame.getBoundingClientRect();
-                        addSmoothScroll(speed * TOUCH_SCROLL_GAIN * FLING_DURATION_MS, last.clientX - rect.left, last.clientY - rect.top, horizontal);
+                        fling = {
+                            speed: speed * TOUCH_SCROLL_GAIN,
+                            pending: 0,
+                            horizontal,
+                            x: last.clientX - rect.left,
+                            y: last.clientY - rect.top,
+                            last: now,
+                            raf: requestAnimationFrame(flingTick),
+                        };
                     }, false);
                     frameInput.addEventListener('touchmove', e => {
                         if (e.touches.length === 1 && touch !== undefined) {
                             e.preventDefault();
-                            const now = Date.now();
+                            const now = performance.now();
                             const deltaX = touch.pageX - e.touches[0].pageX;
                             const deltaY = touch.pageY - e.touches[0].pageY;
-                            const dt = Math.max(now - (velocity.at || now - 16), 1);
-                            // smoothed, so one jittery move does not decide the fling
-                            velocity = { x: 0.6 * (deltaX / dt) + 0.4 * velocity.x, y: 0.6 * (deltaY / dt) + 0.4 * velocity.y, at: now };
+                            // the last moments of the swipe decide how fast the page keeps gliding
+                            samples.push({ t: now, x: e.touches[0].pageX, y: e.touches[0].pageY });
+                            while (samples.length > 1 && now - samples[0].t > VELOCITY_WINDOW_MS) samples.shift();
                             const rect = frame.getBoundingClientRect();
                             const horizontal = Math.abs(deltaX) > Math.abs(deltaY);
                             let amount = Math.round((horizontal ? deltaX : deltaY) * TOUCH_SCROLL_GAIN);

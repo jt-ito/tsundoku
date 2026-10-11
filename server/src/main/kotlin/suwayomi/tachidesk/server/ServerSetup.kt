@@ -50,6 +50,7 @@ import suwayomi.tachidesk.server.settings.SettingsRegistry
 import suwayomi.tachidesk.manga.impl.LibraryShare
 import suwayomi.tachidesk.server.user.SetupManager
 import suwayomi.tachidesk.server.util.AppMutex.handleAppMutex
+import suwayomi.tachidesk.global.impl.AdBlocker
 import suwayomi.tachidesk.server.util.CEFManager
 import suwayomi.tachidesk.server.util.ConfigTypeRegistration
 import suwayomi.tachidesk.server.util.ExitCode
@@ -481,6 +482,9 @@ fun applicationSetup() {
     GlobalScope.launch {
         CEFManager.init()
     }
+
+    // load the ad blocklist now, so it is ready when the first WebView page opens
+    AdBlocker.start()
 
     serverConfig.subscribeTo(
         serverConfig.extensionStores,

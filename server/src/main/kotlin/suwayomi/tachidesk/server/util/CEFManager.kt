@@ -117,7 +117,7 @@ object CEFManager {
                         JCefAppConfig.getInstance(cefDir.toString(), false).apply {
                             appArgsAsList.addAll(
                                 arrayOf(
-                                    "--disable-gpu",
+                                    *gpuArguments(),
                                     // #1486 needed to be able to render without a window
                                     "--off-screen-rendering-enabled",
                                     // #1489 since /dev/shm is restricted in docker (OOM)
@@ -574,4 +574,21 @@ object CEFManager {
             }
         }
     }
+
+    /**
+     * Containers and servers without a display have no graphics card to use, so CEF is told not to try (#1486). On a
+     * machine with a GPU the browser uses it: pages render faster, and challenge pages see a real graphics renderer
+     * instead of a software one. `TSUNDOKU_WEBVIEW_GPU=true|false` overrides the detection.
+     */
+    private fun gpuArguments(): Array<String> {
+        val useGpu =
+            System.getenv("TSUNDOKU_WEBVIEW_GPU")?.toBooleanStrictOrNull()
+                ?: !isContainer()
+
+        logger.info { "WebView GPU acceleration: $useGpu" }
+        return if (useGpu) emptyArray() else arrayOf("--disable-gpu")
+    }
+
+    private fun isContainer(): Boolean =
+        java.io.File("/.dockerenv").exists() || java.io.File("/run/.containerenv").exists()
 }
