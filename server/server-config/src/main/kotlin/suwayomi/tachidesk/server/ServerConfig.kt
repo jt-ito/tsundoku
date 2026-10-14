@@ -332,21 +332,21 @@ class ServerConfig(
         protoNumber = 24,
         group = SettingGroup.LIBRARY_UPDATES,
         privacySafe = true,
-        defaultValue = true,
+        defaultValue = false,
     )
 
     val excludeNotStarted: MutableStateFlow<Boolean> by BooleanSetting(
         protoNumber = 25,
         group = SettingGroup.LIBRARY_UPDATES,
         privacySafe = true,
-        defaultValue = true,
+        defaultValue = false,
     )
 
     val excludeCompleted: MutableStateFlow<Boolean> by BooleanSetting(
         protoNumber = 26,
         group = SettingGroup.LIBRARY_UPDATES,
         privacySafe = true,
-        defaultValue = true,
+        defaultValue = false,
     )
 
     val globalUpdateInterval: MutableStateFlow<Double> by DisableableDoubleSetting(

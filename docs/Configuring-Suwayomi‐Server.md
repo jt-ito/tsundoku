@@ -120,9 +120,9 @@ server.downloadConversions = {}
 
 ### Updater
 ```
-server.excludeUnreadChapters = true
-server.excludeNotStarted = true
-server.excludeCompleted = true
+server.excludeUnreadChapters = false
+server.excludeNotStarted = false
+server.excludeCompleted = false
 server.globalUpdateInterval = 12
 server.updateMangas = false
 ```
