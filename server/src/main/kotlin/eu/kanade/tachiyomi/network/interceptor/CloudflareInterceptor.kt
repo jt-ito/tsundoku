@@ -38,6 +38,7 @@ class CloudflareInterceptor(
     private val setUserAgent: (String) -> Unit,
 ) : Interceptor {
     private val logger = KotlinLogging.logger {}
+    private val network: NetworkHelper by injectLazy()
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val originalRequest = chain.request()
@@ -49,6 +50,14 @@ class CloudflareInterceptor(
         // Check if Cloudflare anti-bot is on
         if (!(originalResponse.code in ERROR_CODES && originalResponse.header("Server") in SERVER_CHECK)) {
             return originalResponse
+        }
+
+        // tells whether a challenge that was solved in the WebView reached this request: the cookie is only accepted
+        // together with the user agent it was issued to
+        logger.info {
+            "Cloudflare answered ${originalResponse.code} for ${originalRequest.url.host}: user agent sent: " +
+                "${originalRequest.header("User-Agent")}, clearance cookie stored: " +
+                "${network.cookieStore.get(originalRequest.url).any { it.name in COOKIE_NAMES }}"
         }
 
         if (!serverConfig.flareSolverrEnabled.value) {
