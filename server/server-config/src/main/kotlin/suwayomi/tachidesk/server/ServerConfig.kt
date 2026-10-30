@@ -354,7 +354,7 @@ class ServerConfig(
         group = SettingGroup.LIBRARY_UPDATES,
         privacySafe = true,
         defaultValue = 12.hours.inWholeHours.toDouble(),
-        min = 6.0,
+        min = 0.25,
         description = "Time in hours",
     )
 

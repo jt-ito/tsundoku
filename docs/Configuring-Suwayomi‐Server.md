@@ -129,7 +129,7 @@ server.updateMangas = false
 - `server.excludeUnreadChapters = true` controls if Suwayomi should include titles with unread chapters in the library update.
 - `server.excludeNotStarted = true` controls if Suwayomi should include titles which weren't started yet in the library update.
 - `server.excludeCompleted = true` controls if Suwayomi should include titles which are marked completed in the library update.
-- `server.globalUpdateInterval = 12` sets the time in hours for the automatic library internal, `0` to disable it. Range: 6 <= n < ∞
+- `server.globalUpdateInterval = 12` sets the time in hours for the automatic library internal, `0` to disable it. Range: 0.25 <= n < ∞ (a short interval loads the sources heavily, 6 or more is recommended)
 - `server.updateMangas = false` controls if Suwayomi should also update title metadata along with fetching new chapters in the library update.
 
 ### Authentication
