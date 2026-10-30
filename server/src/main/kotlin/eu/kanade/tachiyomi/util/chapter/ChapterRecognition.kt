@@ -36,7 +36,7 @@ object ChapterRecognition {
     ): Double {
         // If chapter number is known return.
         if (chapterNumber != null && (chapterNumber == -2.0 || chapterNumber > -1.0)) {
-            return chapterNumber
+            return withDashDecimal(mangaTitle, chapterName, chapterNumber)
         }
 
         // Get chapter title with lower case
@@ -73,6 +73,26 @@ object ChapterRecognition {
 
         // return the first number encountered
         return getChapterNumberFromMatch(numberMatch.first())
+    }
+
+    /**
+     * Some sources number the parts of a chapter "14-2", "14-3" and hand over a plain 14 for all of them, which makes
+     * them look like copies of one chapter (reading one marks the others read). The decimal is taken from the name then.
+     * Example: 14, "Chapter 14-2" -R> 14.2
+     */
+    private fun withDashDecimal(
+        mangaTitle: String,
+        chapterName: String,
+        chapterNumber: Double,
+    ): Double {
+        if (chapterNumber < 0.0 || chapterNumber % 1.0 != 0.0) {
+            return chapterNumber
+        }
+
+        val whole = chapterNumber.toLong()
+        val name = chapterName.lowercase().replace(mangaTitle.lowercase(), "")
+        val decimal = Regex("""(?<![0-9.])${whole}\s*-\s*([0-9]{1,2})(?![0-9])""").find(name)?.groupValues?.get(1)
+        return if (decimal != null) "$whole.$decimal".toDouble() else chapterNumber
     }
 
     /**
