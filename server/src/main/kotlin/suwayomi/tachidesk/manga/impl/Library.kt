@@ -33,6 +33,7 @@ object Library {
         val manga = getManga(mangaId)
         if (!manga.inLibrary) {
             transaction {
+                Category.ensureFallbackDefault(1)
                 val defaultCategories =
                     CategoryTable
                         .selectAll()

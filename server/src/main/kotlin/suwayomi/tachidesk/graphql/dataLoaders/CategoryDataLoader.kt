@@ -52,6 +52,7 @@ class CategoriesForMangaDataLoader : KotlinDataLoader<Int, CategoryNodeList> {
 
     override fun getDataLoader(graphQLContext: GraphQLContext): DataLoader<Int, CategoryNodeList> =
         DataLoaderFactory.newDataLoader<Int, CategoryNodeList> { ids ->
+            val userId = graphQLContext.currentUserId()
             future {
                 transaction {
                     addLogger(Slf4jSqlDebugLogger)
@@ -60,6 +61,8 @@ class CategoriesForMangaDataLoader : KotlinDataLoader<Int, CategoryNodeList> {
                             .innerJoin(CategoryTable)
                             .selectAll()
                             .where { CategoryMangaTable.manga inList ids }
+                            // every Default category is shown as the id 0: only the one of the account itself counts
+                            .filter { !Category.isDefaultRow(it) || (it[CategoryTable.user]?.value ?: 1) == userId }
                             .map { Pair(it[CategoryMangaTable.manga].value, CategoryType(it)) }
                             .groupBy { it.first }
                             .mapValues { it.value.map { pair -> pair.second } }

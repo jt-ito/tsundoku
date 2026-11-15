@@ -283,9 +283,17 @@ class CategoryMutation {
     private fun updateCategories(
         ids: List<Int>,
         patch: UpdateCategoryPatch,
+        userId: Int,
     ) {
         transaction {
             if (patch.name != null) {
+                // The Default categories can be renamed like any other, but no other category can take the name "Default":
+                // backups and syncs skip a category with that name
+                if (patch.name.equals(Category.DEFAULT_CATEGORY_NAME, ignoreCase = true)) {
+                    val defaultRows = Category.defaultRowIds()
+                    require(ids.all { it in defaultRows }) { "\"Default\" is reserved for the Default category" }
+                }
+
                 CategoryTable.update({ CategoryTable.id inList ids }) { update ->
                     patch.name.also {
                         update[name] = it
@@ -293,11 +301,7 @@ class CategoryMutation {
                 }
             }
             if (patch.default != null) {
-                CategoryTable.update({ CategoryTable.id inList ids }) { update ->
-                    patch.default.also {
-                        update[isDefault] = it
-                    }
-                }
+                Category.setDefaultFlag(userId, ids, patch.default)
             }
             if (patch.includeInUpdate != null) {
                 CategoryTable.update({ CategoryTable.id inList ids }) { update ->
@@ -324,7 +328,7 @@ class CategoryMutation {
         val (clientMutationId, apiId, patch) = input
         val id = Category.resolveId(apiId, dataFetchingEnvironment.currentUserId())
 
-        updateCategories(listOf(id), patch)
+        updateCategories(listOf(id), patch, dataFetchingEnvironment.currentUserId())
         if (patch.name != null) LibraryShare.requestSync(dataFetchingEnvironment.currentUserId())
 
         val category =
@@ -347,7 +351,7 @@ class CategoryMutation {
         val userId = dataFetchingEnvironment.currentUserId()
         val ids = apiIds.map { Category.resolveId(it, userId) }
 
-        updateCategories(ids, patch)
+        updateCategories(ids, patch, userId)
 
         val categories =
             transaction {
@@ -421,13 +425,19 @@ class CategoryMutation {
         val userType = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser)
         val userId = userType?.idOrNull ?: 1
 
+        if (name.equals(Category.DEFAULT_CATEGORY_NAME, ignoreCase = true)) {
+            // creating the Default category brings back the one that was deleted: it is empty, there is nothing to lose
+            require(Category.isDefaultDeleted(userId)) { "The Default category already exists" }
+
+            val restored = Category.restoreDefaultCategory(userId)
+            LibraryShare.requestSync(userId)
+            return CreateCategoryPayload(clientMutationId, transaction { CategoryType(restored) })
+        }
+
         transaction {
             require(CategoryTable.selectAll().where { (CategoryTable.name eq input.name) and (CategoryTable.user eq userId) }.isEmpty()) {
-                "'name' must be unique"
+                "A category named '${input.name}' already exists"
             }
-        }
-        require(!name.equals(Category.DEFAULT_CATEGORY_NAME, ignoreCase = true)) {
-            "'name' must not be ${Category.DEFAULT_CATEGORY_NAME}"
         }
         if (order != null) {
             require(order > 0) {
@@ -460,6 +470,12 @@ class CategoryMutation {
                     }
 
                 Category.normalizeCategories()
+
+                if (default == true) {
+                    // while the Default category is deleted only one category is the default one
+                    Category.setDefaultFlag(userId, listOf(id.value), true)
+                }
+                Category.ensureFallbackDefault(userId)
 
                 CategoryType(CategoryTable.selectAll().where { CategoryTable.id eq id }.first())
             }
@@ -517,6 +533,8 @@ class CategoryMutation {
                 CategoryTable.deleteWhere { CategoryTable.id eq categoryId }
 
                 Category.normalizeCategories()
+                // the deleted one may have been the default category of an account without the Default category
+                Category.ensureFallbackDefault(dataFetchingEnvironment.currentUserId())
                 category?.let { SyncYomiSyncService.rememberDeletedCategory(it[CategoryTable.uid]) }
 
                 if (category != null) {
@@ -565,16 +583,20 @@ class CategoryMutation {
         transaction {
             // the links of a manga are shared by all accounts: only the categories of the caller are touched
             val ownCategoryIds = CategoryTable.select(CategoryTable.id).where { CategoryTable.ownedBy(userId) }.map { it[CategoryTable.id].value }
+            // the API shows the Default category of every account as the id 0: this is the row of the account's own one
+            val removeFromCategories = patch.removeFromCategories?.map { Category.resolveId(it, userId) }
+            val addToCategories = patch.addToCategories?.map { Category.resolveId(it, userId) }
             if (patch.clearCategories == true) {
                 CategoryMangaTable.deleteWhere { (CategoryMangaTable.manga inList ids) and (CategoryMangaTable.category inList ownCategoryIds) }
-            } else if (!patch.removeFromCategories.isNullOrEmpty()) {
+            } else if (!removeFromCategories.isNullOrEmpty()) {
                 CategoryMangaTable.deleteWhere {
                     (CategoryMangaTable.manga inList ids) and
-                        (CategoryMangaTable.category inList patch.removeFromCategories.filter { it in ownCategoryIds })
+                        (CategoryMangaTable.category inList removeFromCategories.filter { it in ownCategoryIds })
                 }
             }
-            if (!patch.addToCategories.isNullOrEmpty()) {
-                CategoryManga.addMangasToCategories(ids, patch.addToCategories)
+            if (!addToCategories.isNullOrEmpty()) {
+                // the Default category can be one of them: the manga then stay in it besides the other categories
+                CategoryManga.addMangasToCategories(ids, addToCategories, allowDefault = true)
             }
         }
     }

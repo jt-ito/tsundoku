@@ -156,6 +156,9 @@ class CategoryQuery {
         val userType = dataFetchingEnvironment.getAttribute(Attribute.TachideskUser)
         val userId = userType?.idOrNull ?: 1
 
+        // an account that deleted its Default category needs a category to take its place
+        Category.ensureFallbackDefault(userId)
+
         val queryResults =
             transaction {
                 val res = CategoryTable.selectAll()

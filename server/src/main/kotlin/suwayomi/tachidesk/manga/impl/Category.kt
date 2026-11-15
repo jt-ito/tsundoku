@@ -15,11 +15,11 @@ import org.jetbrains.exposed.v1.core.dao.id.EntityID
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.inSubQuery
-import org.jetbrains.exposed.v1.core.lowerCase
 import org.jetbrains.exposed.v1.core.isNull
 import org.jetbrains.exposed.v1.core.notInSubQuery
 import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.core.neq
+import org.jetbrains.exposed.v1.core.notInList
 import org.jetbrains.exposed.v1.core.statements.BatchUpdateStatement
 import org.jetbrains.exposed.v1.jdbc.andWhere
 import org.jetbrains.exposed.v1.jdbc.batchInsert
@@ -85,15 +85,12 @@ object Category {
         includeInDownload: Int?,
     ) {
         transaction {
+            if (categoryId != DEFAULT_CATEGORY_ID && isDefault != null) setDefaultFlag(1, listOf(categoryId), isDefault)
             CategoryTable.update({ CategoryTable.id eq categoryId }) {
-                if (
-                    categoryId != DEFAULT_CATEGORY_ID &&
-                    name != null &&
-                    !name.equals(DEFAULT_CATEGORY_NAME, ignoreCase = true)
-                ) {
+                // the Default category can be renamed, no other category can take the name Default (backups skip it)
+                if (name != null && (categoryId == DEFAULT_CATEGORY_ID || !name.equals(DEFAULT_CATEGORY_NAME, ignoreCase = true))) {
                     it[CategoryTable.name] = name
                 }
-                if (categoryId != DEFAULT_CATEGORY_ID && isDefault != null) it[CategoryTable.isDefault] = isDefault
                 if (includeInUpdate != null) it[CategoryTable.includeInUpdate] = includeInUpdate
                 if (includeInDownload != null) it[CategoryTable.includeInDownload] = includeInDownload
             }
@@ -213,13 +210,14 @@ object Category {
             transaction {
                 CategoryTable
                     .selectAll()
-                    .where { CategoryTable.ownedBy(userId) }
-                    .firstOrNull { it[CategoryTable.name].equals(DEFAULT_CATEGORY_NAME, ignoreCase = true) }
+                    .where { CategoryTable.ownedBy(userId) and (CategoryTable.isBuiltIn eq true) }
+                    .firstOrNull()
                     ?.get(CategoryTable.id)
                     ?.value
                     ?: CategoryTable
                         .insertAndGetId {
                             it[CategoryTable.name] = DEFAULT_CATEGORY_NAME
+                            it[CategoryTable.isBuiltIn] = true
                             it[CategoryTable.isDefault] = true
                             it[CategoryTable.order] = Int.MAX_VALUE
                             it[CategoryTable.user] = EntityID(userId, UserTable)
@@ -233,14 +231,13 @@ object Category {
         transaction {
             CategoryTable
                 .select(CategoryTable.id, CategoryTable.name)
-                .where { (CategoryTable.id eq DEFAULT_CATEGORY_ID) or (CategoryTable.name.lowerCase() eq DEFAULT_CATEGORY_NAME.lowercase()) }
+                .where { (CategoryTable.id eq DEFAULT_CATEGORY_ID) or (CategoryTable.isBuiltIn eq true) }
                 .map { it[CategoryTable.id].value }
                 .toSet()
         }
 
-    /** The row is the Default category of its account. */
-    fun isDefaultRow(row: ResultRow): Boolean =
-        row[CategoryTable.id].value == DEFAULT_CATEGORY_ID || row[CategoryTable.name].equals(DEFAULT_CATEGORY_NAME, ignoreCase = true)
+    /** The row is the Default category of its account, whatever it is named. */
+    fun isDefaultRow(row: ResultRow): Boolean = row[CategoryTable.id].value == DEFAULT_CATEGORY_ID || row[CategoryTable.isBuiltIn]
 
     /** The id the API shows: the Default category of every account is the id 0. */
     fun apiId(row: ResultRow): Int = if (isDefaultRow(row)) DEFAULT_CATEGORY_ID else row[CategoryTable.id].value
@@ -254,8 +251,9 @@ object Category {
     const val DEFAULT_CATEGORY_ID = 0
 
     /**
-     * The manga that are in none of the categories of the account. Category links are shared by all accounts, so a link
-     * into the category of another account (for example a shared library) must not count as categorized here.
+     * The manga that are in none of the categories of the account (the Default category is not one of them). Category
+     * links are shared by all accounts, so a link into the category of another account (for example a shared library)
+     * must not count as categorized here.
      */
     fun uncategorizedOf(userId: Int): Op<Boolean> =
         MangaTable.id notInSubQuery
@@ -263,10 +261,29 @@ object Category {
                 .select(CategoryMangaTable.manga)
                 .where {
                     CategoryMangaTable.category inSubQuery
-                        CategoryTable.select(CategoryTable.id).where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq DEFAULT_CATEGORY_ID) }
+                        CategoryTable
+                            .select(CategoryTable.id)
+                            .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq DEFAULT_CATEGORY_ID) and (CategoryTable.isBuiltIn eq false) }
                 }
+
+    /** The manga that were put into the Default category of the account on purpose, besides the ones without a category. */
+    fun linkedToDefaultOf(userId: Int): Op<Boolean> =
+        MangaTable.id inSubQuery
+            CategoryMangaTable
+                .select(CategoryMangaTable.manga)
+                .where {
+                    CategoryMangaTable.category inSubQuery
+                        CategoryTable
+                            .select(CategoryTable.id)
+                            .where { CategoryTable.ownedBy(userId) and ((CategoryTable.id eq DEFAULT_CATEGORY_ID) or (CategoryTable.isBuiltIn eq true)) }
+                }
+
+    /** The manga of the Default category of the account: the ones without a category and the ones put into it on purpose. */
+    fun defaultMembersOf(userId: Int): Op<Boolean> = uncategorizedOf(userId) or linkedToDefaultOf(userId)
+
     const val DEFAULT_CATEGORY_NAME = "Default"
     private const val DEFAULT_HIDDEN_META_KEY = "default_category_hidden"
+    private const val DEFAULT_RESTORED_META_KEY = "default_category_restored"
 
     /**
      * The default category can be "deleted" by the user: its manga move into another category and it stays hidden,
@@ -283,6 +300,7 @@ object Category {
                     .not()
             !hidden ||
                 needsDefaultCategory(userId) ||
+                !CategoryMangaTable.selectAll().where { CategoryMangaTable.category eq defaultId }.empty() ||
                 CategoryTable
                     .selectAll()
                     .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq defaultId) }
@@ -312,9 +330,101 @@ object Category {
                 this[CategoryMangaTable.manga] = it
             }
 
+            // a manga that was put into the Default category on purpose keeps its other categories and leaves the Default one
+            CategoryMangaTable.deleteWhere { CategoryMangaTable.category eq defaultCategoryId(userId) }
+
             modifyMeta(defaultCategoryId(userId), DEFAULT_HIDDEN_META_KEY, "true")
+            CategoryMetaTable.deleteWhere { (CategoryMetaTable.ref eq defaultCategoryId(userId)) and (CategoryMetaTable.key eq DEFAULT_RESTORED_META_KEY) }
+            ensureFallbackDefault(userId)
             mangaIds
         }
+
+    /** The account deleted its Default category (it stays hidden, see [removeDefaultCategory]). */
+    fun isDefaultDeleted(userId: Int): Boolean =
+        transaction {
+            val defaultId = defaultCategoryId(userId)
+            !CategoryMetaTable
+                .selectAll()
+                .where { (CategoryMetaTable.ref eq defaultId) and (CategoryMetaTable.key eq DEFAULT_HIDDEN_META_KEY) }
+                .empty()
+        }
+
+    /**
+     * Brings a deleted Default category back, as the empty category it was left as (its manga were moved to other
+     * categories when it was deleted). Its name is "Default" again, whatever it was renamed to before.
+     */
+    fun restoreDefaultCategory(userId: Int): ResultRow =
+        transaction {
+            val defaultId = defaultCategoryId(userId)
+            CategoryMetaTable.deleteWhere { (CategoryMetaTable.ref eq defaultId) and (CategoryMetaTable.key eq DEFAULT_HIDDEN_META_KEY) }
+            // Default is the default one for new manga again: the category that stood in for it (flagged on its own or picked
+            // by ensureFallbackDefault) gives the mark back
+            ownCategoryRows(userId)
+                .filter { it[CategoryTable.isDefault] }
+                .forEach { other -> CategoryTable.update({ CategoryTable.id eq other[CategoryTable.id] }) { it[isDefault] = false } }
+            CategoryTable.update({ CategoryTable.id eq defaultId }) {
+                it[name] = DEFAULT_CATEGORY_NAME
+                it[isDefault] = true
+            }
+            // the library hides an empty Default tab, unless the user brought it back on purpose
+            modifyMeta(defaultId, DEFAULT_RESTORED_META_KEY, "true")
+            CategoryTable.selectAll().where { CategoryTable.id eq defaultId }.first()
+        }
+
+    /** The rows of the categories of the account that are not its Default category, in the order of the list. */
+    private fun ownCategoryRows(userId: Int): List<ResultRow> =
+        CategoryTable
+            .selectAll()
+            .where { CategoryTable.ownedBy(userId) and (CategoryTable.id neq DEFAULT_CATEGORY_ID) and (CategoryTable.isBuiltIn eq false) }
+            .orderBy(CategoryTable.order to SortOrder.ASC, CategoryTable.id to SortOrder.ASC)
+            .toList()
+
+    /**
+     * While the Default category is deleted, one of the other categories takes its place: manga without a chosen category
+     * go into it. This is the category that is marked as the default one for new manga; if there is none, the one at the
+     * top of the list becomes it.
+     */
+    fun ensureFallbackDefault(userId: Int) {
+        transaction {
+            if (!isDefaultDeleted(userId)) {
+                return@transaction
+            }
+
+            val categories = ownCategoryRows(userId)
+            if (categories.isNotEmpty() && categories.none { it[CategoryTable.isDefault] }) {
+                CategoryTable.update({ CategoryTable.id eq categories.first()[CategoryTable.id] }) { it[isDefault] = true }
+            }
+        }
+    }
+
+    /**
+     * Marks categories as the default ones for new manga, or takes the mark away. While the Default category is deleted
+     * exactly one category has the mark: marking another one moves it, and the last one cannot lose it.
+     */
+    fun setDefaultFlag(
+        userId: Int,
+        categoryIds: List<Int>,
+        isDefault: Boolean,
+    ) {
+        transaction {
+            if (isDefaultDeleted(userId)) {
+                if (isDefault) {
+                    require(categoryIds.size == 1) { "Only one category can be the default one while the Default category is deleted" }
+                    ownCategoryRows(userId)
+                        .filter { it[CategoryTable.id].value != categoryIds.first() && it[CategoryTable.isDefault] }
+                        .forEach { other -> CategoryTable.update({ CategoryTable.id eq other[CategoryTable.id] }) { it[CategoryTable.isDefault] = false } }
+                } else {
+                    val remaining = ownCategoryRows(userId).filter { it[CategoryTable.id].value !in categoryIds && it[CategoryTable.isDefault] }
+                    val isOwn = ownCategoryRows(userId).any { it[CategoryTable.id].value in categoryIds }
+                    require(!isOwn || remaining.isNotEmpty()) {
+                        "One category has to be the default one while the Default category is deleted: choose another one instead"
+                    }
+                }
+            }
+
+            CategoryTable.update({ CategoryTable.id inList categoryIds }) { it[CategoryTable.isDefault] = isDefault }
+        }
+    }
 
     fun getCategoryList(): List<CategoryDataClass> =
         transaction {

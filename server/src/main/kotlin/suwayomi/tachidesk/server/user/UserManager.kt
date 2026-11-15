@@ -162,6 +162,7 @@ object UserManager {
             // Create default category for new user
             CategoryTable.insert {
                 it[name] = "Default"
+                it[isBuiltIn] = true
                 it[isDefault] = true
                 it[order] = 0
                 it[user] = EntityID(newId, UserTable)
@@ -207,6 +208,7 @@ object UserManager {
 
             CategoryTable.insert {
                 it[name] = "Default"
+                it[isBuiltIn] = true
                 it[isDefault] = true
                 it[order] = 0
                 it[user] = EntityID(newId, UserTable)

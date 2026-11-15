@@ -84,7 +84,8 @@ class MangaForCategoryDataLoader : KotlinDataLoader<Int, MangaNodeList> {
                                 }
 
                             scopedQuery
-                                .andWhere { suwayomi.tachidesk.manga.impl.Category.uncategorizedOf(userId) }
+                                // the Default category: the manga without a category and the ones put into it on purpose
+                                .andWhere { suwayomi.tachidesk.manga.impl.Category.defaultMembersOf(userId) }
                                 .map { MangaType(it, userId) }
                                 .let {
                                     mapOf(0 to it)
@@ -95,7 +96,8 @@ class MangaForCategoryDataLoader : KotlinDataLoader<Int, MangaNodeList> {
                             CategoryMangaTable
                                 .innerJoin(MangaTable)
                                 .selectAll()
-                                .where { CategoryMangaTable.category inList ids }
+                                // the id 0 is the Default category of every account, worked out above
+                                .where { CategoryMangaTable.category inList ids.filter { it != 0 } }
                                 .map { Pair(it[CategoryMangaTable.category].value, MangaType(it, userId)) }
                                 .groupBy { it.first }
                                 .mapValues { it.value.map { pair -> pair.second } }

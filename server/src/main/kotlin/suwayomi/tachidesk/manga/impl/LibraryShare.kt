@@ -503,6 +503,7 @@ object LibraryShare {
      */
     private fun mirrorCategoryNames(shareId: Int) {
         val names = CategoryTable.selectAll().associate { it[CategoryTable.id].value to it[CategoryTable.name] }
+        val defaultIds = Category.defaultRowIds()
         val owners = CategoryTable.selectAll().associate { it[CategoryTable.id].value to it[CategoryTable.user]?.value }
         fun taken(
             owner: Int?,
@@ -518,8 +519,8 @@ object LibraryShare {
             val last = pair[LibraryShareCategoryTable.lastName]
             val newName =
                 when {
-                    senderName != last && !senderName.equals(Category.DEFAULT_CATEGORY_NAME, ignoreCase = true) -> senderName
-                    recipientName != last && !recipientName.equals(Category.DEFAULT_CATEGORY_NAME, ignoreCase = true) -> recipientName
+                    senderName != last && senderId !in defaultIds -> senderName
+                    recipientName != last && recipientId !in defaultIds -> recipientName
                     else -> return@forEach
                 }
             val renameSender = newName != senderName
@@ -544,7 +545,7 @@ object LibraryShare {
             CategoryTable
                 .selectAll()
                 .where { CategoryTable.ownedBy(owner) }
-                .firstOrNull { it[CategoryTable.name].equals(Category.DEFAULT_CATEGORY_NAME, ignoreCase = true) }
+                .firstOrNull { Category.isDefaultRow(it) }
                 ?.get(CategoryTable.id)
                 ?.value
         val share = LibraryShareTable.selectAll().where { LibraryShareTable.id eq shareId }.first()
@@ -662,7 +663,7 @@ object LibraryShare {
             CategoryTable
                 .selectAll()
                 .where { CategoryTable.ownedBy(senderId) and (CategoryTable.id neq 0) }
-                .filter { !it[CategoryTable.name].equals(Category.DEFAULT_CATEGORY_NAME, ignoreCase = true) }
+                .filterNot { Category.isDefaultRow(it) }
                 .filter { scope == Scope.LIBRARY || it[CategoryTable.id].value in row.categoryIdList() }
         val senderCategoryIds = senderCategories.map { it[CategoryTable.id].value }
 

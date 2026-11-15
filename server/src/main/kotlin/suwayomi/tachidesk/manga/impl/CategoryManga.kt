@@ -53,13 +53,19 @@ object CategoryManga {
         addMangasToCategories(listOf(mangaId), categoryIds)
     }
 
+    /**
+     * @param allowDefault the account put the manga into its Default category on purpose, so the manga stay in it even
+     * when they are in other categories too. Without it the Default categories are skipped: the manga of the Default
+     * category are the ones without a category (for example while adding to the library or restoring a backup).
+     */
     fun addMangasToCategories(
         mangaIds: List<Int>,
         categoryIds: List<Int>,
+        allowDefault: Boolean = false,
     ) {
-        // the Default category of an account is never linked: it means "in none of my categories"
         val defaultRowIds = Category.defaultRowIds()
-        val filteredCategoryIds = categoryIds.filter { it != DEFAULT_CATEGORY_ID && it !in defaultRowIds }
+        val filteredCategoryIds =
+            if (allowDefault) categoryIds else categoryIds.filter { it != DEFAULT_CATEGORY_ID && it !in defaultRowIds }
 
         val mangaIdsToCategoryIds = getMangasCategories(mangaIds).mapValues { it.value.map { category -> category.id } }
         val mangaIdsToNewCategoryIds =
@@ -131,7 +137,7 @@ object CategoryManga {
                     MangaTable
                         .leftJoin(ChapterTable, { MangaTable.id }, { ChapterTable.manga })
                         .select(columns = selectedColumns)
-                        .where { inLibrary and Category.uncategorizedOf(1) }
+                        .where { inLibrary and Category.defaultMembersOf(1) }
                 } else {
                     MangaTable
                         .innerJoin(CategoryMangaTable)

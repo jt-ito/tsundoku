@@ -23,6 +23,9 @@ object CategoryTable : IntIdTable() {
     val name = varchar("name", 64)
     val order = integer("sort_order").default(0)
     val isDefault = bool("is_default").default(false)
+
+    /** The row is the Default category ("in none of my categories") of its account, whatever it is named. */
+    val isBuiltIn = bool("is_built_in").default(false)
     val includeInUpdate = integer("include_in_update").default(IncludeOrExclude.UNSET.value)
     val includeInDownload = integer("include_in_download").default(IncludeOrExclude.UNSET.value)
 

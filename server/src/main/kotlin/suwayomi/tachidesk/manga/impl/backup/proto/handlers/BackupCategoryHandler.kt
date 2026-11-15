@@ -48,7 +48,7 @@ object BackupCategoryHandler {
             categories.map {
                 BackupCategory(
                     // restore skips this name, so a renamed default must not leak into the backup as a real category
-                    if (it[CategoryTable.id].value == Category.DEFAULT_CATEGORY_ID) Category.DEFAULT_CATEGORY_NAME else it[CategoryTable.name],
+                    if (Category.isDefaultRow(it)) Category.DEFAULT_CATEGORY_NAME else it[CategoryTable.name],
                     it[CategoryTable.order],
                     it[CategoryTable.flags],
                     it[CategoryTable.version],
@@ -74,8 +74,11 @@ object BackupCategoryHandler {
                     .orderBy(CategoryTable.order to SortOrder.ASC)
                     .map { CategoryTable.toDataClass(it) }
             }
-        val dbCategoriesByName = dbCategories.associateBy { it.name }
-        val dbCategoriesByUid = dbCategories.associateBy { it.uid }
+        // the Default category is never matched with a backup category, whatever it is named
+        val defaultRowIds = Category.defaultRowIds()
+        val matchableCategories = dbCategories.filter { it.id !in defaultRowIds }
+        val dbCategoriesByName = matchableCategories.associateBy { it.name }
+        val dbCategoriesByUid = matchableCategories.associateBy { it.uid }
 
         var nextOrder = dbCategories.maxOfOrNull { it.order }?.plus(1) ?: 0
 
