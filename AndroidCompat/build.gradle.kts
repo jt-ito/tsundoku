@@ -22,7 +22,7 @@ dependencies {
     testImplementation(libs.bundles.sharedTest)
 
     // Android stub library
-    implementation(libs.android.stubs)
+    implementation(files(rootProject.file("libs/android-jar-1.0.0.jar")))
 
     // XML
     compileOnly(libs.xmlpull)
