@@ -373,7 +373,9 @@ class KcefWebSettings : WebSettings() {
     override fun getDefaultTextEncodingName() = defaultTextEncodingName ?: ""
 
     override fun setUserAgentString(p0: String?) {
-        userAgentString = p0
+        // The engine is a desktop Chromium. A user agent that claims Android contradicts navigator.platform and the client
+        // hints, which bot checks (Cloudflare Turnstile) notice, so those are ignored and the engine's own one is used.
+        userAgentString = p0?.takeUnless { it.contains("Android", ignoreCase = true) }
     }
 
     override fun getUserAgentString() = userAgentString ?: defaultUserAgent()

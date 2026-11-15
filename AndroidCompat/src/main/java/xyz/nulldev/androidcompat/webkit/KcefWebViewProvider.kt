@@ -302,7 +302,9 @@ class KcefWebViewProvider(
                 browser.executeJavaScript(js, "SUWAYOMI ${it.toNice()}", 0)
             }
 
-            handler.post { viewClient.onPageStarted(view, frame.url, null) }
+            // extensions use the url as a map key, so it must never be null
+            val startedUrl = frame.url ?: ""
+            handler.post { viewClient.onPageStarted(view, startedUrl, null) }
         }
     }
 

@@ -87,7 +87,14 @@ object AdBlocker {
             "hilltopads.net",
             "adcash.com",
             "tsyndicate.com",
+            "hmarket.io",
         )
+
+    // Banners some sites serve from their own domain (e.g. niyaniya.moe/images/banners/...), which no domain rule can reach
+    private val AD_PATH_PREFIXES = listOf("/images/banners/")
+
+    // Ad networks that rotate throwaway domains ("96307e0351.8123a66c4a.com": ten hex characters, twice), so no list keeps up
+    private val AD_HOST_PATTERN = Regex("""^[0-9a-f]{10}\.[0-9a-f]{10}\.com$""")
 
     // entries of a hosts file that are not domains to block
     private val IGNORED_HOSTS = setOf("localhost", "localhost.localdomain", "local", "broadcasthost", "0.0.0.0")
@@ -229,12 +236,22 @@ object AdBlocker {
         if (isInDomains(host, ALLOWED_DOMAINS)) return false
 
         // checked first: these need no blocklist, which is still downloading/loading right after the server started
-        if (isInDomains(host, ALWAYS_BLOCKED_DOMAINS)) return true
+        if (isInDomains(host, ALWAYS_BLOCKED_DOMAINS) || AD_HOST_PATTERN.matches(host)) return true
 
         if (isMainFrame) return false
 
+        val path = getPath(url)
+        if (path != null && AD_PATH_PREFIXES.any { path.startsWith(it) }) return true
+
         return isInDomains(host, blockedDomains) && !isInDomains(host, exemptDomains)
     }
+
+    private fun getPath(url: String): String? =
+        try {
+            URI(url).path?.lowercase()
+        } catch (e: Exception) {
+            null
+        }
 
     private fun getHost(url: String): String? =
         try {

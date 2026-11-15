@@ -91,7 +91,47 @@ public class CustomContext extends Context {
 
     @Override
     public Resources getResources() {
-        return null;
+        return FakeResources.INSTANCE;
+    }
+
+    /**
+     * Extensions read the configuration (night mode, locale) from the resources. The real constructor needs an asset
+     * manager, so the instance is allocated without running it and only these two getters are answered.
+     */
+    private static final class FakeResources extends Resources {
+        static final Resources INSTANCE = create();
+
+        private Configuration configuration;
+        private android.util.DisplayMetrics displayMetrics;
+
+        private FakeResources() {
+            super(null, null, null);
+        }
+
+        // the stub classes throw from their constructors, so every object is allocated without running one
+        private static Resources create() {
+            try {
+                java.lang.reflect.Field f = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+                f.setAccessible(true);
+                sun.misc.Unsafe unsafe = (sun.misc.Unsafe) f.get(null);
+                FakeResources r = (FakeResources) unsafe.allocateInstance(FakeResources.class);
+                r.configuration = (Configuration) unsafe.allocateInstance(Configuration.class);
+                r.displayMetrics = (android.util.DisplayMetrics) unsafe.allocateInstance(android.util.DisplayMetrics.class);
+                return r;
+            } catch (ReflectiveOperationException e) {
+                return null;
+            }
+        }
+
+        @Override
+        public Configuration getConfiguration() {
+            return configuration;
+        }
+
+        @Override
+        public android.util.DisplayMetrics getDisplayMetrics() {
+            return displayMetrics;
+        }
     }
 
     @Override
