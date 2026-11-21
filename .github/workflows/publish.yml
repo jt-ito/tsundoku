@@ -82,6 +82,8 @@ jobs:
           repository: ${{ env.WEBUI_REPO }}
           ref: ${{ env.WEBUI_REF }}
           path: webui
+          # the revision of the build is the count of commits
+          fetch-depth: 0
 
       - name: Set up Node
         uses: actions/setup-node@v6
@@ -96,8 +98,8 @@ jobs:
         run: |
           corepack enable
           pnpm build
-          # the server reads the version of a custom WebUI from this file and shows the splash screen without it
-          echo r1 > build/revision
+          # the server reads the version of a custom WebUI from this file (r<number>) and shows the splash screen without it
+          echo "r$(git rev-list --count HEAD)" > build/revision
 
       - name: Upload the WebUI
         uses: actions/upload-artifact@v7

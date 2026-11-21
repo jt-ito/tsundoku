@@ -25,11 +25,12 @@ WORKDIR /webui
 # (a local build can do the same with --build-arg WEBUI_COMMIT=$(date +%s) or --no-cache-filter webui).
 ARG WEBUI_COMMIT=""
 RUN echo "WebUI commit: ${WEBUI_COMMIT:-unknown}" \
-    && git clone --depth 1 ${WEBUI_REF:+--branch "$WEBUI_REF"} "$WEBUI_REPO" .
+    && git clone ${WEBUI_REF:+--branch "$WEBUI_REF"} "$WEBUI_REPO" .
 ENV CI=true HUSKY=0
 RUN corepack enable && pnpm build \
-    # the server reads the version of a custom WebUI from this file and shows the splash screen without it
-    && echo r1 > build/revision
+    # the server reads the version of a custom WebUI from this file (r<number>) and shows the splash screen without it;
+    # the number is the count of commits of the WebUI, so the build in an image can be told from another one
+    && echo "r$(git rev-list --count HEAD)" > build/revision
 
 # ---------------------------------------------------------------- server jar
 FROM eclipse-temurin:21-jdk-noble AS server
