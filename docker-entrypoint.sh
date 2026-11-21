@@ -14,6 +14,25 @@ if [ "$(id -u)" = 0 ]; then
         mkdir -p "$dir"
         [ "$(stat -c %u:%g "$dir")" = "$PUID:$PGID" ] || chown "$PUID:$PGID" "$dir"
     done
+    # PostgreSQL refuses to start when its data folder belongs to another user or is open to others ("data directory has
+    # wrong ownership"). That is what a library copied or moved to another disk as root looks like, so it is repaired
+    # here. Only when something is off: on a big library this would be a slow walk through the files on every start.
+    if [ -d /data/postgres-data ]; then
+        if [ "$(stat -c %u:%g /data/postgres-data)" != "$PUID:$PGID" ] ||
+            { [ -f /data/postgres-data/PG_VERSION ] && [ "$(stat -c %u:%g /data/postgres-data/PG_VERSION)" != "$PUID:$PGID" ]; }; then
+            echo "Fixing the owner of /data/postgres-data (now $(stat -c %u:%g /data/postgres-data), expected $PUID:$PGID)" >&2
+            chown -R "$PUID:$PGID" /data/postgres-data
+        fi
+        case "$(stat -c %a /data/postgres-data)" in
+            700 | 750) ;;
+            *) chmod 700 /data/postgres-data ;;
+        esac
+        if [ "$(stat -c %u /data/postgres-data)" != "$PUID" ]; then
+            echo "WARNING: /data/postgres-data still belongs to user $(stat -c %u /data/postgres-data) (expected $PUID) after chown, so PostgreSQL will refuse to start." >&2
+            echo "WARNING: This happens when /data is a folder shared from a Windows or network disk that does not keep Linux owners." >&2
+            echo "WARNING: Keep /data in a Docker volume (or on a Linux disk), or use DATABASE=h2, which has no such limit." >&2
+        fi
+    fi
     export HOME=/home/tsundoku
     exec setpriv --reuid="$PUID" --regid="$PGID" --init-groups "$0" "$@"
 fi
