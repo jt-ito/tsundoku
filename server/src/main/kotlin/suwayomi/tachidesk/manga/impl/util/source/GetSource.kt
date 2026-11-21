@@ -29,10 +29,28 @@ object GetSource {
     private val sourceCache = ConcurrentHashMap<Long, Source>()
     private val applicationDirs: ApplicationDirs by injectLazy()
 
+    /**
+     * Sources that are part of the server. There is no extension to load them from again after they were removed
+     * from the cache (e.g. after one of their preferences changed), so they are created again by their factory.
+     */
+    private val builtInSources = ConcurrentHashMap<Long, () -> Source>()
+
+    fun registerBuiltInSource(
+        sourceId: Long,
+        create: () -> Source,
+    ) {
+        builtInSources[sourceId] = create
+        sourceCache[sourceId] = create()
+    }
+
     private suspend fun getSource(sourceId: Long): Source? {
         val cachedResult: Source? = sourceCache[sourceId]
         if (cachedResult != null) {
             return cachedResult
+        }
+
+        builtInSources[sourceId]?.let { create ->
+            return create().also { sourceCache[sourceId] = it }
         }
 
         val sourceRecord =

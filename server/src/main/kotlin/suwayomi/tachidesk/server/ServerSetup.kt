@@ -43,6 +43,7 @@ import suwayomi.tachidesk.manga.impl.extension.ExtensionStoreService
 import suwayomi.tachidesk.manga.impl.update.IUpdater
 import suwayomi.tachidesk.manga.impl.update.Updater
 import suwayomi.tachidesk.manga.impl.util.lang.renameTo
+import suwayomi.tachidesk.manga.impl.util.source.BuiltInSource
 import suwayomi.tachidesk.server.database.DatabaseMigrationService
 import suwayomi.tachidesk.server.database.databaseUp
 import suwayomi.tachidesk.server.generated.BuildConfig
@@ -74,6 +75,7 @@ import java.net.Authenticator
 import java.net.PasswordAuthentication
 import java.security.Security
 import java.util.Locale
+import java.util.ServiceLoader
 
 private val logger = KotlinLogging.logger {}
 
@@ -153,6 +155,18 @@ fun serverModule(applicationDirs: ApplicationDirs): Module =
         single<IUpdater> { Updater() }
         single<JsonMapper> { JavalinJackson3() }
     }
+
+/** Adds the sources that are built into this build of the server (none in the default one). */
+private fun registerBuiltInSources() {
+    ServiceLoader.load(BuiltInSource::class.java).forEach { builtInSource ->
+        try {
+            builtInSource.register()
+        } catch (e: Exception) {
+            // a built in source that cannot be added must not keep the server from starting
+            logger.error(e) { "Failed to register the built in source ${builtInSource::class.java.name}" }
+        }
+    }
+}
 
 @OptIn(DelicateCoroutinesApi::class)
 fun applicationSetup() {
@@ -350,6 +364,8 @@ fun applicationSetup() {
         shutdownApp(ExitCode.LocalSourceSetupFailure)
     }
 
+    registerBuiltInSources()
+
     serverConfig.subscribeTo(
         combine<Any, DatabaseSettings>(
             serverConfig.databaseType,
@@ -384,6 +400,7 @@ fun applicationSetup() {
             databaseUp()
 
             LocalSource.register()
+            registerBuiltInSources()
         },
         ignoreInitialValue = true,
     )
